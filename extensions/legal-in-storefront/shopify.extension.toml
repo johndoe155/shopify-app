@@ -1,0 +1,7 @@
+api_version = "2026-10"
+uid = "07a8c156-09a9-0a2a-7f66-47587cc921b3a0ab5758"
+
+[[extensions]]
+name = "Legal metrology and MRP blocks"
+type = "theme"
+handle = "legal-in-storefront"

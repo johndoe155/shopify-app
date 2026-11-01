@@ -1,0 +1,103 @@
+{%- comment -%}
+  Block B - grievance officer.
+
+  Reads the shop-level legal_in.settings JSON metafield written by Store
+  settings, so it works on any page (footer, contact page) without calling the
+  app server. Renders nothing at all until the details are filled in.
+{%- endcomment -%}
+
+{{ 'legal-in.css' | asset_url | stylesheet_tag }}
+
+{%- liquid
+  assign settings_json = shop.metafields.legal_in.settings.value
+  assign officer = settings_json.grievance_officer
+  assign care = settings_json.consumer_care
+  assign platform_url = settings_json.platform_customer_care_url
+  assign acknowledgement_hours = settings_json.statements.acknowledgement_hours | default: 48
+  assign has_officer = false
+  if officer.name != blank or officer.email != blank or officer.phone != blank
+    assign has_officer = true
+  endif
+-%}
+
+  <section
+    class="legal-in legal-in--grievance{% if block.settings.bordered %} legal-in--bordered{% endif %}"
+    data-legal-in-block="grievance"
+    aria-labelledby="legal-in-grievance-heading"
+    {% unless has_officer %}hidden{% endunless %}
+    {{ block.shopify_attributes }}
+  >
+    <h2 class="legal-in__heading" id="legal-in-grievance-heading">
+      {{ block.settings.heading | default: 'Grievance officer' | escape }}
+    </h2>
+
+    <dl class="legal-in__list">
+      {%- if officer.name != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Name</dt>
+          <dd class="legal-in__value">{{ officer.name | escape }}</dd>
+        </div>
+      {%- endif -%}
+      {%- if officer.designation != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Designation</dt>
+          <dd class="legal-in__value">{{ officer.designation | escape }}</dd>
+        </div>
+      {%- endif -%}
+      {%- if officer.email != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Email</dt>
+          <dd class="legal-in__value">
+            <a href="mailto:{{ officer.email | escape }}">{{ officer.email | escape }}</a>
+          </dd>
+        </div>
+      {%- endif -%}
+      {%- if officer.phone != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Phone</dt>
+          <dd class="legal-in__value">
+            <a href="tel:{{ officer.phone | remove: ' ' | escape }}">{{ officer.phone | escape }}</a>
+          </dd>
+        </div>
+      {%- endif -%}
+      {%- if care.address != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Address</dt>
+          <dd class="legal-in__value">{{ care.address | escape }}</dd>
+        </div>
+      {%- endif -%}
+      {%- if platform_url != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Customer care</dt>
+          <dd class="legal-in__value">
+            <a href="{{ platform_url | escape }}">Contact customer care</a>
+          </dd>
+        </div>
+      {%- endif -%}
+    </dl>
+
+    <p class="legal-in__statement">
+      Complaints are acknowledged within {{ acknowledgement_hours }} hours and redressed within one month of being received.
+    </p>
+  </section>
+
+{% schema %}
+{
+  "name": "t:blocks.grievance.name",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "t:blocks.grievance.heading.label",
+      "default": "Grievance officer"
+    },
+    {
+      "type": "checkbox",
+      "id": "bordered",
+      "label": "t:blocks.grievance.bordered.label",
+      "default": false
+    }
+  ]
+}
+{% endschema %}

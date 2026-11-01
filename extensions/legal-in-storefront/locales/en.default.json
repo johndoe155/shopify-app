@@ -1,0 +1,20 @@
+{
+  "blocks": {
+    "declarations": {
+      "name": "Legal declarations",
+      "heading": { "label": "Heading" },
+      "bordered": { "label": "Show a border" },
+      "compact": { "label": "Compact spacing" }
+    },
+    "grievance": {
+      "name": "Grievance officer",
+      "heading": { "label": "Heading" },
+      "bordered": { "label": "Show a border" }
+    },
+    "priorPrice": {
+      "name": "Prior price",
+      "heading": { "label": "Heading" },
+      "bordered": { "label": "Show a border" }
+    }
+  }
+}

@@ -1,0 +1,141 @@
+/*
+ * Styles for the three legal metrology blocks.
+ *
+ * Everything is scoped under .legal-in so the blocks cannot restyle the theme.
+ * No web fonts, no external requests, no images: nothing here can cause a
+ * delayed image or font shifts, and the blocks inherit the theme's font.
+ */
+.legal-in {
+  --legal-in-border: rgba(0, 0, 0, 0.12);
+  --legal-in-text: inherit;
+  --legal-in-heading: inherit;
+  color: var(--legal-in-text);
+  font-size: 0.95em;
+  line-height: 1.5;
+  margin: 1.25rem 0;
+}
+
+.legal-in__heading {
+  color: var(--legal-in-heading);
+  font-size: 1.05em;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  line-height: 1.35;
+}
+
+.legal-in__list {
+  border-collapse: collapse;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.legal-in__row {
+  align-items: start;
+  border-top: 1px solid var(--legal-in-border);
+  display: flex;
+  gap: 1rem;
+  padding: 0.45rem 0;
+}
+
+.legal-in__row:last-child {
+  border-bottom: 1px solid var(--legal-in-border);
+}
+
+.legal-in__term {
+  flex: 0 0 46%;
+  font-weight: 500;
+  margin: 0;
+}
+
+.legal-in__value {
+  flex: 1 1 auto;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.legal-in__note {
+  font-size: 0.85em;
+  margin: 0.4rem 0 0;
+  opacity: 0.8;
+}
+
+/* ---------------------------------------------------------------------------
+ * Reserved space for the prior price block.
+ *
+ * The block switches between one-line and two-line notes, and between variants
+ * that do and do not have a prior price. Both would otherwise change the height
+ * of the page on a variant switch. Each row of the block therefore has a fixed
+ * minimum height, the note is clamped to two lines, and the "no prior price for
+ * this variant" state hides the content with `visibility` rather than removing
+ * the box.
+ * ------------------------------------------------------------------------- */
+.legal-in--prior-price {
+  --legal-in-line: 1.5em;
+  --legal-in-note-lines: 2;
+  /* label + value + note(2 lines) + the stack's 0.35rem gaps */
+  min-height: calc(var(--legal-in-line) * 2 + 1.5em * 0.85 * var(--legal-in-note-lines) + 1.1rem);
+}
+
+.legal-in--prior-price .legal-in__label {
+  min-height: var(--legal-in-line);
+}
+
+.legal-in--prior-price .legal-in__value {
+  min-height: var(--legal-in-line);
+}
+
+.legal-in--prior-price .legal-in__note {
+  min-height: calc(1.5em * 0.85 * var(--legal-in-note-lines));
+  overflow: hidden;
+  /* Two lines maximum, so a longer note cannot grow the block. */
+  display: -webkit-box;
+  -webkit-line-clamp: var(--legal-in-note-lines);
+  -webkit-box-orient: vertical;
+}
+
+/* The variant has no prior price, but the product does: keep the space. */
+.legal-in--prior-price.legal-in--idle .legal-in__stack {
+  visibility: hidden;
+}
+
+/* visibility: hidden also removes the empty content from the accessibility
+   tree, so an idle block is not announced as "Prior price" with no value. */
+
+.legal-in--bordered {
+  border: 1px solid var(--legal-in-border);
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+.legal-in--compact .legal-in__row {
+  padding: 0.3rem 0;
+}
+
+.legal-in__stack > * + * {
+  margin-top: 0.35rem;
+}
+
+.legal-in__label {
+  font-weight: 600;
+  margin: 0;
+}
+
+.legal-in__statement {
+  margin: 0.6rem 0 0;
+  max-width: 60ch;
+}
+
+@media screen and (max-width: 749px) {
+  .legal-in__row {
+    display: block;
+  }
+
+  .legal-in__term {
+    margin-bottom: 0.1rem;
+  }
+}
+
+/* Theme styles must not override the semantic hidden state. */
+.legal-in[hidden] { display: none !important; }

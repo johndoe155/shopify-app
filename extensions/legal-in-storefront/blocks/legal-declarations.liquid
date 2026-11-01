@@ -1,0 +1,210 @@
+{%- comment -%}
+  Block A — the legal declarations for the pack being viewed.
+
+  The audit separates the declarations that used to be merged here:
+    L4  manufacturer, packer (only where it differs), seller/dealer and importer
+        are different persons, so they are different rows;
+    L5  the canonical country and the exact wording on the pack are shown apart;
+    L6  the importer row appears only for a package explicitly marked as imported,
+        not because the country is not "India";
+    L9  the month/year of manufacture or pre-packing is a separate row from any
+        best-before or use-by date;
+    L1  the unit sale price is shown in the standard unit the rule applies to.
+
+  Reads only product metafields in the merchant-owned legal_in namespace, so it
+  never calls the app server. Rows appear only when the merchant has declared
+  them; the dashboard is what reports a missing declaration, not this block.
+{%- endcomment -%}
+
+{{ 'legal-in.css' | asset_url | stylesheet_tag }}
+
+{%- liquid
+  assign fields = product.metafields.legal_in
+  assign heading = block.settings.heading
+  assign mrp_cents = fields.mrp.value | times: 100
+  assign unit_price_cents = fields.unit_sale_price.value | times: 100
+
+  assign variant_gid = 'gid://shopify/ProductVariant/' | append: variant.id
+  assign variant_mrp = fields.variant_mrp.value[variant_gid]
+  if variant_mrp == blank
+    assign variant_id_string = variant.id | append: ''
+    assign variant_mrp = fields.variant_mrp.value[variant_id_string]
+  endif
+  assign variant_mrp_cents = variant_mrp | times: 100
+
+  comment
+    Rule 13 standard-unit thresholds, applied to the declared net quantity so the
+    unit price says what it is per: g up to 1,000 g then kg, ml up to 1,000 ml then
+    l, cm up to 100 cm then m, otherwise the count descriptor as declared.
+  endcomment
+  assign nq_unit = fields.net_quantity_unit.value
+  assign nq_value = fields.net_quantity_value.value | times: 1.0
+  assign unit_price_label = nq_unit
+  if nq_unit == 'g' and nq_value >= 1000
+    assign unit_price_label = 'kg'
+  elsif nq_unit == 'ml' and nq_value >= 1000
+    assign unit_price_label = 'l'
+  elsif nq_unit == 'cm' and nq_value >= 100
+    assign unit_price_label = 'm'
+  endif
+
+  assign has_rows = false
+  if fields.mrp.value != blank or fields.variant_mrp.value != blank or fields.manufacturer_name.value != blank or fields.manufacturer_address.value != blank or fields.packer_name.value != blank or fields.seller_name.value != blank or fields.country_of_origin.value != blank or fields.importer_name.value != blank or fields.net_quantity_value.value != blank or fields.unit_sale_price.value != blank or fields.generic_name.value != blank or fields.manufactured_date.value != blank or fields.expiry_date.value != blank
+    assign has_rows = true
+  endif
+-%}
+
+  <section
+    class="legal-in legal-in--declarations{% if block.settings.bordered %} legal-in--bordered{% endif %}{% if block.settings.compact %} legal-in--compact{% endif %}"
+    data-legal-in-block="declarations"
+    {% unless has_rows %}hidden{% endunless %}
+    {{ block.shopify_attributes }}
+  >
+    {%- if heading != blank -%}
+      <h2 class="legal-in__heading">{{ heading | escape }}</h2>
+    {%- endif -%}
+
+    <dl class="legal-in__list">
+      {%- if variant_mrp != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">MRP for this pack, inclusive of all taxes</dt>
+          <dd class="legal-in__value">{{ variant_mrp_cents | money }}</dd>
+        </div>
+      {%- elsif fields.mrp.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">MRP, inclusive of all taxes</dt>
+          <dd class="legal-in__value">{{ mrp_cents | money }}</dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.manufacturer_name.value != blank or fields.manufacturer_address.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Manufacturer</dt>
+          <dd class="legal-in__value">
+            {%- if fields.manufacturer_name.value != blank -%}{{ fields.manufacturer_name.value | escape }}{%- endif -%}
+            {%- if fields.manufacturer_name.value != blank and fields.manufacturer_address.value != blank %}, {% endif -%}
+            {%- if fields.manufacturer_address.value != blank -%}{{ fields.manufacturer_address.value | escape }}{%- endif -%}
+          </dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.packer_name.value != blank or fields.packer_address.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Packer</dt>
+          <dd class="legal-in__value">
+            {%- if fields.packer_name.value != blank -%}{{ fields.packer_name.value | escape }}{%- endif -%}
+            {%- if fields.packer_name.value != blank and fields.packer_address.value != blank %}, {% endif -%}
+            {%- if fields.packer_address.value != blank -%}{{ fields.packer_address.value | escape }}{%- endif -%}
+          </dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.seller_name.value != blank or fields.seller_address.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Sold by</dt>
+          <dd class="legal-in__value">
+            {%- if fields.seller_name.value != blank -%}{{ fields.seller_name.value | escape }}{%- endif -%}
+            {%- if fields.seller_name.value != blank and fields.seller_address.value != blank %}, {% endif -%}
+            {%- if fields.seller_address.value != blank -%}{{ fields.seller_address.value | escape }}{%- endif -%}
+          </dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.country_of_origin.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Country of origin</dt>
+          <dd class="legal-in__value">
+            {{- fields.country_of_origin.value | escape -}}
+            {%- if fields.country_of_origin_label.value != blank %} (pack states: {{ fields.country_of_origin_label.value | escape }}){% endif -%}
+          </dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.is_imported_package.value == true -%}
+        {%- if fields.importer_name.value != blank or fields.importer_address.value != blank -%}
+          <div class="legal-in__row">
+            <dt class="legal-in__term">Importer</dt>
+            <dd class="legal-in__value">
+              {%- if fields.importer_name.value != blank -%}{{ fields.importer_name.value | escape }}{%- endif -%}
+              {%- if fields.importer_name.value != blank and fields.importer_address.value != blank %}, {% endif -%}
+              {%- if fields.importer_address.value != blank -%}{{ fields.importer_address.value | escape }}{%- endif -%}
+            </dd>
+          </div>
+        {%- endif -%}
+      {%- endif -%}
+
+      {%- if fields.net_quantity_value.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Net quantity</dt>
+          <dd class="legal-in__value">
+            {{- fields.net_quantity_value.value | escape -}}
+            {%- if fields.net_quantity_unit.value != blank %} {{ fields.net_quantity_unit.value | escape }}{% endif -%}
+          </dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.unit_sale_price.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">
+            Unit sale price
+            {%- if unit_price_label != blank %} per {{ unit_price_label | escape }}{% endif -%}
+          </dt>
+          <dd class="legal-in__value">{{ unit_price_cents | money }}</dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.generic_name.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Common name</dt>
+          <dd class="legal-in__value">{{ fields.generic_name.value | escape }}</dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.manufactured_date.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">Month and year of manufacture / pre-packing</dt>
+          <dd class="legal-in__value">{{ fields.manufactured_date.value | escape }}</dd>
+        </div>
+      {%- endif -%}
+
+      {%- if fields.expiry_date.value != blank -%}
+        <div class="legal-in__row">
+          <dt class="legal-in__term">
+            {%- case fields.expiry_type.value -%}
+              {%- when 'best_before' -%}Best before
+              {%- when 'use_by' -%}Use by
+              {%- else -%}Best before / use by
+            {%- endcase -%}
+          </dt>
+          <dd class="legal-in__value">{{ fields.expiry_date.value | escape }}</dd>
+        </div>
+      {%- endif -%}
+    </dl>
+  </section>
+
+{% schema %}
+{
+  "name": "t:blocks.declarations.name",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "t:blocks.declarations.heading.label",
+      "default": "Product declarations"
+    },
+    {
+      "type": "checkbox",
+      "id": "bordered",
+      "label": "t:blocks.declarations.bordered.label",
+      "default": false
+    },
+    {
+      "type": "checkbox",
+      "id": "compact",
+      "label": "t:blocks.declarations.compact.label",
+      "default": false
+    }
+  ]
+}
+{% endschema %}

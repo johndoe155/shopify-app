@@ -1,0 +1,293 @@
+// Prisma schema for the India Legal Metrology & MRP app.
+// Postgres in every environment.
+//
+// The app does not intentionally access or store customer or order records, and
+// it requests no customer or order scope, so no table here holds a customer
+// record. The one table a merchant could type a customer into is the complaint
+// register, and it is built not to invite that: reference, dates, channel and a
+// summary, no name, address, order or contact field. The only customer-facing
+// endpoints (customers/data_request, customers/redact) return 200 without
+// reading or writing anything; they are answered from that fact, not from an
+// assumption that a shop has no customers.
+// Merchant and staff data (the shop domain, sessions, the settings the merchant
+// types and the declarations this app writes) is stored — see
+// listing/privacy-policy.md for the full list, the processors, retention and
+// deletion.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Required by @shopify/shopify-app-session-storage-prisma.
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?
+  emailVerified Boolean?
+  refreshToken  String?
+  refreshTokenExpires DateTime?
+}
+
+model Shop {
+  id                      String    @id @default(cuid())
+  shopDomain              String    @unique
+  installedAt             DateTime  @default(now())
+  uninstalledAt           DateTime?
+  isActive                Boolean   @default(true)
+  onboardingCompletedAt   DateTime?
+
+  // Billing (F9)
+  plan                    String    @default("free")
+  planStatus              String    @default("NONE")
+  billingInterval         String? // monthly | annual
+  subscriptionId          String?
+  trialEndsAt             DateTime?
+  planUpdatedAt           DateTime?
+
+  // Package-label contact (Rule 6(2) / R8). The name and address are required;
+  // telephone and e-mail are recorded "if available".
+  storeName               String?
+  consumerCareAddress     String?
+  consumerCarePhone       String?
+  consumerCareEmail       String?
+  // E-commerce entity platform customer care (2020 Rules, Rule 4(2)(d) / R8, R10)
+  platformCustomerCareUrl String?
+
+  // Grievance officer (F6 / R10)
+  grievanceName           String?
+  grievanceDesignation    String?
+  grievanceEmail          String?
+  grievancePhone          String?
+
+  // Policies (F6 / R9)
+  returnPolicyUrl         String?
+  returnPolicyText        String?
+  refundPolicyUrl         String?
+  refundPolicyText        String?
+  exchangePolicyUrl       String?
+  exchangePolicyText      String?
+  warrantyPolicyUrl       String?
+  warrantyPolicyText      String?
+  deliveryTermsUrl        String?
+  deliveryTermsText       String?
+  returnShippingCostUrl   String?
+  returnShippingCostText  String?
+  paymentModesUrl         String?
+  paymentModesText        String?
+  grievanceRedressalUrl   String?
+  grievanceRedressalText  String?
+  otherInformationUrl     String?
+  otherInformationText    String?
+  useBeforeInfoUrl        String?
+  useBeforeInfoText       String?
+  // Last accessibility check per policy link (R9)
+  policyLinkChecksJson    Json?
+
+  // Storefront block status (R10 / R11) — detected from the live storefront,
+  // with a manual confirmation fallback for each block.
+  blocksDetectedAt        DateTime?
+  blocksDetectedJson      Json?
+  confirmDeclarationsBlock Boolean  @default(false)
+  confirmGrievanceBlock   Boolean   @default(false)
+  confirmPriorPriceBlock  Boolean   @default(false)
+  countryFilterConfirmed  Boolean   @default(false)
+
+  // Scan bookkeeping (F2)
+  lastScanStartedAt       DateTime?
+  lastScanCompletedAt     DateTime?
+  lastScanProductCount    Int       @default(0)
+  lastScanBulkOperationId String?
+
+  // Review prompt (shown once, after the score first reaches 100%)
+  reviewPromptShown       Boolean   @default(false)
+  reviewPromptShownAt     DateTime?
+
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  scanResults             ScanResult[]
+  priceSnapshots          PriceSnapshot[]
+  auditRecords            AuditRecord[]
+  changeLogs              ChangeLog[]
+  jobRuns                 JobRun[]
+  complaints              Complaint[]
+  priceAnnouncements      PriceAnnouncement[]
+}
+
+/// Price-reduction announcements (R11, audit item L13).
+///
+/// A prior price is measured from the 30 days before a reduction was announced,
+/// so the announcement is the event the evidence has to name. The app derives it
+/// when a variant price or a compare-at price moves, but a discount code or an
+/// automatic discount is applied at checkout and moves no variant price, so the
+/// merchant records those here: the date, the price the shopper pays, the
+/// mechanism and the conditions. A null `variantId` records a whole-product
+/// announcement, which applies to every variant that has no record of its own.
+model PriceAnnouncement {
+  id             String   @id @default(cuid())
+  shopId         String
+  shop           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productId      String
+  variantId      String?
+  announcedAt    DateTime
+  consumerPrice  Decimal  @db.Decimal(12, 2)
+  mechanism      String // variant_price | compare_at | automatic_discount | discount_code
+  conditions     String?
+  createdAt      DateTime @default(now())
+
+  @@index([shopId, productId])
+  @@index([shopId, variantId])
+  @@index([shopId, announcedAt])
+}
+
+/// Complaint register. R10 needs evidence that the 48-hour acknowledgement and
+/// one-month redressal duties are actually met; a storefront block is not evidence.
+model Complaint {
+  id             String   @id @default(cuid())
+  shopId         String
+  shop           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  receivedAt     DateTime
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  channel        String   @default("email")
+  reference      String
+  summary        String?
+  createdAt      DateTime @default(now())
+
+  @@index([shopId, receivedAt])
+}
+
+model ScanResult {
+  id            String   @id @default(cuid())
+  shopId        String
+  shop          Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productId     String
+  productHandle String
+  productTitle  String
+  productVendor String?
+  productType   String?
+  ruleId        String
+  status        String // pass | fail | not_applicable | inconclusive
+  message       String
+  scannedAt     DateTime @default(now())
+
+  @@unique([shopId, productId, ruleId])
+  @@index([shopId, status])
+  @@index([shopId, productId])
+}
+
+model PriceSnapshot {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productId  String
+  variantId  String
+  price      Decimal  @db.Decimal(12, 2)
+  compareAt  Decimal? @db.Decimal(12, 2)
+  observedAt DateTime @default(now())
+  source     String   @default("webhook") // webhook | nightly_diff | install
+
+  @@index([shopId, variantId, observedAt])
+  @@index([shopId, observedAt])
+}
+
+model AuditRecord {
+  id          String   @id @default(cuid())
+  shopId      String
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  answersJson Json
+  completedAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([shopId, completedAt])
+}
+
+model ChangeLog {
+  id            String   @id @default(cuid())
+  shopId        String
+  shop          Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  productId     String
+  productHandle String?
+  field         String
+  oldValue      String?
+  newValue      String?
+  changedAt     DateTime @default(now())
+  source        String // bulk_editor | csv_import | webhook | install
+
+  @@index([shopId, changedAt])
+  @@index([shopId, productId])
+}
+
+/// Idempotency ledger for webhooks. The primary key is derived from
+/// shop + topic + event identity so a redelivered webhook is processed once.
+model WebhookDelivery {
+  id         String   @id
+  topic      String
+  shopDomain String
+  receivedAt DateTime @default(now())
+
+  @@index([shopDomain, topic])
+}
+
+model JobRun {
+  id         String    @id @default(cuid())
+  shopId     String?
+  shop       Shop?     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name       String
+  idempotencyKey String  @unique
+  status     String // queued | running | done | failed
+  attempts   Int       @default(0)
+  error      String?
+  meta       Json?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([name, status])
+}
+
+/// Durable queue for background work (scans, webhook follow-up, price history).
+///
+/// The in-process queue is only an execution detail: every job is written here
+/// first, so a restart, a deploy or a crash loses no work. Jobs are claimed with
+/// a lease (`status = running`, `lockedAt`), which means a worker that dies
+/// mid-job has its work recovered by the lease sweep rather than by a human.
+/// `dedupeKey` is unique, so a redelivered webhook cannot queue the same product
+/// twice, and a retry of the same job is a no-op.
+model QueuedJob {
+  id          String    @id @default(cuid())
+  name        String
+  dedupeKey   String    @unique
+  payload     Json
+  shopDomain  String?
+  status      String    @default("pending") // pending | running | done | failed
+  // Lower runs first among jobs that are due at the same moment, so the price
+  // snapshot a webhook queued is recorded before the rescan/publish it queued.
+  priority    Int       @default(100)
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(3)
+  runAt       DateTime  @default(now())
+  lockedAt    DateTime?
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  finishedAt  DateTime?
+
+  @@index([status, runAt, priority])
+  @@index([shopDomain, status])
+}

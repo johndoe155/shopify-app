@@ -1,0 +1,25 @@
+# How Shopify CLI runs this app (see shopify.dev/docs/apps/build/cli-for-apps/app-structure).
+#
+# Without this file `shopify app dev` cannot tell how to serve a React Router app
+# that keeps its web files at the project root, and it fails before the tunnel or
+# the dev store are ever reached. The CLI needs at least one shopify.web.toml with
+# the "frontend" role; a single-process app that serves its own API and webhooks
+# (which this one does - /webhooks and /api/jobs/* are routes of the same server)
+# must also declare the "backend" role.
+
+name = "india-legal-mrp"
+roles = ["frontend", "backend"]
+
+# Shopify CLI sends its UNINSTALLED probe here when `app dev` runs with --reset.
+# The app's single webhook endpoint is /webhooks (see shopify.app.toml and
+# app/routes/webhooks.tsx).
+webhooks_path = "/webhooks"
+
+[commands]
+# `shopify app dev` starts this and proxies the tunnel URL to it. Vite binds
+# 0.0.0.0 and honours PORT (vite.config.ts), which is what the CLI passes in
+# PORT/FRONTEND_PORT/SERVER_PORT.
+dev = "npm run dev:server"
+# `shopify app build` runs this. It is the same production build `npm run build`
+# produces, so what the CLI validates is what gets deployed.
+build = "npm run build"

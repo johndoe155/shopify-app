@@ -1,0 +1,167 @@
+{%- comment -%}
+  Block C - prior price.
+
+  The metafield uses Admin API GIDs, whereas Liquid exposes numeric IDs. Keep
+  IDs as strings (Shopify IDs can exceed JavaScript's safe integer range).
+  The selected variant is rendered server-side; the asset handles later changes.
+
+  Staleness (review finding: "Block C can show a stale prior price"):
+  - The stored `show` flag is a hint, never the decision. The block re-checks the
+    LIVE compare-at price from the product itself, so when a sale ends and the
+    compare-at price is cleared the block hides immediately — even if the
+    metafield from the last publish still says `show: true` and still carries the
+    old prior price.
+  - The stored entry must also describe the price the variant is selling at now.
+    A payload written before the latest price change is treated as stale and
+    hidden rather than printed.
+  - The entry is only ever written with a statutory prior price when the app has
+    a complete 30-day lookback (audit L16). A shorter history produces a
+    suppressed entry, so the block shows nothing rather than a partial figure
+    labelled as though it were the rule's prior price.
+  - When the app cannot see a compare-at price on the product at all (some themes
+    do not expose it), it falls back to the stored compare_at in the payload, so
+    the block still works where the product object is thin.
+
+  Height stability (F4 "no layout shift"):
+  - If the product has prior-price data for at least one variant, the block
+    always occupies its box. When the selected variant has no prior price the
+    stack is hidden with `visibility`, which keeps the reserved space, instead
+    of `display: none`, which would pull the page up on a variant switch.
+  - `hidden` (no box in the flow at all) is used only when the product has no
+    prior-price data for any variant. That is decided server-side and cannot
+    change while the merchant switches variants.
+  - The label, value and note each have a fixed minimum height in legal-in.css,
+    and the note is clamped to two lines, so the two note texts (one line and
+    two lines) occupy the same height.
+{%- endcomment -%}
+{{ 'legal-in.css' | asset_url | stylesheet_tag }}
+{%- liquid
+  assign prior = product.metafields.legal_in.prior_price.value
+  assign current_variant = product.selected_or_first_available_variant
+  assign variant_id = current_variant.id | append: ''
+  assign variant_gid = 'gid://shopify/ProductVariant/' | append: variant_id
+  assign entry = prior.variants | where: 'variant_id', variant_gid | first
+  if entry == nil
+    assign entry = prior.variants | where: 'variant_id', variant_id | first
+  endif
+
+  # The live price of the selected variant, in paise — the unit Shopify uses
+  # everywhere in Liquid and in the product JSON. The payload is written in
+  # rupees, so the stored figures are converted before they are compared with
+  # these (see `entry_price` below). Shopify exposes the price as a number or a
+  # decimal string depending on the theme and API version, so it is normalised
+  # before use.
+  assign live_price = current_variant.price | plus: 0
+  assign live_compare = nil
+  if current_variant.compare_at_price != blank and current_variant.compare_at_price > 0
+    assign live_compare = current_variant.compare_at_price | plus: 0
+  endif
+
+  assign show = false
+  if entry and entry.prior_price != nil
+    # Two ways the stored payload can be stale, and both are checked against the
+    # product the theme gave us rather than taken on trust from the metafield:
+    #
+    #  1. the payload was written for a different selling price (a price edit that
+    #     has not been published yet);
+    #  2. the live compare-at price is gone or no longer above the selling price,
+    #     which is what a sale ending looks like. A blank compare-at price means
+    #     "not on sale", NOT "the theme hid it": the block always receives the
+    #     full product object from Shopify, so the stored compare-at is never used
+    #     to override a live blank one.
+    #
+    # A payload from before the schema bump carries no prices at all; it was only
+    # ever written for reduced variants, so its `show` flag stands in until the
+    # next publish rewrites it.
+    assign has_stored_prices = false
+    if entry.price != blank and entry.compare_at != blank
+      assign has_stored_prices = true
+    endif
+
+    if has_stored_prices
+      assign price_matches = false
+      # Rupees in the payload, paise on the product: 249 against 24900 never
+      # matched, and the block showed nothing at all on a real store. Convert the
+      # stored pair rather than dividing the live one, so both sides stay in the
+      # unit Liquid uses and the comparison is exact to the paisa.
+      assign entry_price = entry.price | times: 100 | round
+      if live_price > 0
+        if entry_price == live_price
+          assign price_matches = true
+        endif
+      else
+        # The theme handed the block a product without a price: fall back to the
+        # stored price rather than hiding a valid prior price.
+        assign price_matches = true
+      endif
+
+      assign compare_reduced = false
+      if live_compare
+        if live_compare > live_price
+          assign compare_reduced = true
+        endif
+      elsif live_price <= 0
+        # Same thin-product fallback: judge the stored pair, converted the same way.
+        assign entry_compare = entry.compare_at | times: 100 | round
+        if entry_compare > entry_price
+          assign compare_reduced = true
+        endif
+      endif
+
+      if entry.show and price_matches and compare_reduced
+        assign show = true
+      endif
+    elsif entry.show
+      assign show = true
+    endif
+  endif
+
+  assign prior_cents = entry.prior_price | times: 100
+  assign has_any = false
+  if prior.variants.size > 0
+    assign has_any = true
+  endif
+-%}
+<section
+  class="legal-in legal-in--prior-price{% if block.settings.bordered %} legal-in--bordered{% endif %}{% if show %} legal-in--ready{% else %} legal-in--idle{% endif %}"
+  data-legal-in-block="prior-price"
+  data-variant-id="{{ variant_id | escape }}"
+  data-prior="{{ prior | json | escape }}"
+  data-money-format="{{ shop.money_format | escape }}"
+  data-has-prior="{{ has_any }}"
+  aria-live="polite"
+  {% unless has_any %}hidden{% endunless %}
+  {{ block.shopify_attributes }}
+>
+  <div class="legal-in__stack">
+    <p class="legal-in__label">{{ block.settings.heading | default: 'Prior price' | escape }}</p>
+    <p class="legal-in__value" data-prior-value>{% if show %}{{ prior_cents | money }}{% endif %}</p>
+    <p class="legal-in__note" data-prior-note>
+      {%- if show -%}
+        Lowest price in the 30 days before the reduction was announced, inclusive of taxes.
+      {%- endif -%}
+    </p>
+  </div>
+</section>
+
+{% schema %}
+{
+  "name": "t:blocks.priorPrice.name",
+  "target": "section",
+  "javascript": "prior-price.js",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "t:blocks.priorPrice.heading.label",
+      "default": "Prior price"
+    },
+    {
+      "type": "checkbox",
+      "id": "bordered",
+      "label": "t:blocks.priorPrice.bordered.label",
+      "default": false
+    }
+  ]
+}
+{% endschema %}

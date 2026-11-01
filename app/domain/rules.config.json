@@ -1,0 +1,192 @@
+{
+  "version": "2026.1-draft",
+  "verifiedAgainstGazette": false,
+  "legalReviewDate": "2026-10-31",
+  "sources": [
+    "Legal Metrology (Packaged Commodities) Rules, 2011, G.S.R. 202(E) — Rules 2(m), 3, 6(1), 6(2), 6(10), 6(11), 13, 18(2), 26",
+    "Legal Metrology (Packaged Commodities) Amendment Rules — Rule 6(11) unit sale price, G.S.R. 779(E) dated 2 November 2021 and G.S.R. 226(E) dated 28 March 2022 (relevant commencement 1 January 2024)",
+    "Consumer Protection (E-Commerce) Rules, 2020 — Rules 4(2)(d), 4(4), 4(5), 5(3)(c), 6(5)(d), 7(1)(a)",
+    "Consumer Protection (E-Commerce) (Amendment) Rules, 2026 — prior price after Rule 4(11); notified, commencement fields missing/garbled in the official copy available",
+    "Guidelines for Prevention and Regulation of Dark Patterns, 2023 — clauses 3 to 7 and Annexure 1",
+    "Legal Metrology (Packaged Commodities) First Amendment Rules, 2026, G.S.R. 128(E) dated 13 February 2026, deferred by the Second Amendment Rules, 2026, G.S.R. 312(E) dated 27 April 2026 (country-of-origin filter effective 1 July 2027)"
+  ],
+  "verificationNote": "The rule wording below reflects the legal audit of 31 October 2026. It has NOT been verified against the Gazette: verifiedAgainstGazette stays false, and the version stays 2026.1-draft, until a qualified Indian lawyer or chartered accountant signs every rule. Corrections belong in this file, not in code.",
+  "commencementNote": "There is no single commencement date for every rule. The Legal Metrology package declarations, the 2020 E-Commerce Rules and the 2023 Dark Patterns Guidelines are already operative; unit sale price has been in force since 1 January 2024; the 2026 E-Commerce amendment is notified but its commencement is unverified; the country-of-origin filter is deferred to 1 July 2027 by G.S.R. 312(E).",
+  "parameters": {
+    "priorPriceWindowDays": 30,
+    "auditValidityMonths": 12,
+    "auditReminderMonths": 11,
+    "auditCadenceIsProductPolicy": true,
+    "unitSalePriceDecimals": 2,
+    "policyLinkMaxAgeDays": 7,
+    "complaintEvidenceLookbackMonths": 12
+  },
+  "rules": [
+    {
+      "id": "R1",
+      "order": 1,
+      "label": "MRP (inclusive of all taxes) and no package above it",
+      "level": "product",
+      "applicability": "Covered pre-packaged commodities. Packages marked wholesale or outside Rules 3 and 26 scope are not checked.",
+      "passCondition": "A retail sale price is declared for the package, inclusive of all taxes, and no variant sells above the price declared for that package. Where a variant is a separate package, its own declared price is used.",
+      "helpText": "Enter the maximum retail price printed on the pack; it already includes all taxes. If a variant is a separately priced package, declare its own MRP. Rule 18(2) prohibits selling above the applicable retail sale price, so a variant above its declared price fails. One MRP is not applied to every variant automatically.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011"],
+      "commencement": "In force now (Rules 2(m), 6(1)(e) and 18(2))"
+    },
+    {
+      "id": "R2",
+      "order": 2,
+      "label": "Manufacturer, packer, importer and seller declarations, displayed online",
+      "level": "product",
+      "applicability": "Covered pre-packaged commodities. The online-display half also needs the Legal declarations block live on the storefront.",
+      "passCondition": "Manufacturer name and address are filled. Where the packer is a different person, the packer's name and address are filled too. Where the package is imported, the importer's name and address are filled. The mandatory declarations (other than the manufacture/packing month and year) are displayed on the online store.",
+      "helpText": "Manufacturer name and address are always required. 'Manufacturer or packer' is not a free choice: if the packer is a different person from the manufacturer, the pack must identify both. Imported packages must also name the importer. Separately, Rule 6(10) requires these declarations to appear on the e-commerce listing, which is what the Legal declarations block does.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011"],
+      "commencement": "In force now (Rule 6(1)(a) with Rule 6(10))"
+    },
+    {
+      "id": "R3",
+      "order": 3,
+      "label": "Country of origin: canonical value and the exact label wording",
+      "level": "product",
+      "applicability": "Every covered package. The exact label wording is required for every package, not only imported ones: the app cannot see the pack, so the wording the merchant records is its only evidence of what is actually printed.",
+      "passCondition": "A canonical country of origin is recorded and the exact wording printed on the pack or label is recorded as evidence. For an imported package that wording must use the full and complete country name, not a code, an abbreviation or a city.",
+      "helpText": "Record two things: the canonical country (for example India) and the exact wording on the pack (for example 'Made in India'). The country list in this app is an app design choice, not a statutory format. 'Made in India' may be valid label wording, but it is stored as the label evidence, not used as the canonical value. The searchable country-of-origin filter is a separate, deferred duty: G.S.R. 128(E) notified it and G.S.R. 312(E) deferred it to 1 July 2027. The wording is kept for every package, imported or not, so the two values can be compared later; where the package is imported the wording must name the country in full, so a code, an abbreviation or a city does not pass.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011", "LM_PCR_COUNTRY_FILTER_2026", "COUNTRY_FILTER_DRAFT_2025"],
+      "commencement": "Declaration in force now; the searchable filter is effective 1 July 2027 under G.S.R. 312(E)"
+    },
+    {
+      "id": "R4",
+      "order": 4,
+      "label": "Importer name and address for imported packages",
+      "level": "product",
+      "applicability": "Packages marked as imported. A domestically manufactured or packed Indian-origin package is not required to carry importer details.",
+      "passCondition": "Where the imported-package flag is true, the importer's name and address are filled. Where the flag is unset, the app infers import status from the country of origin and reports the inference in the result rather than treating the package as domestic without comment.",
+      "helpText": "Rule 6(1)(a) requires importer details for any imported package. Mark the package as imported or not; the app no longer assumes import status from the country of origin alone. Country of origin is only a proxy, so where the flag is unset the app infers from it and says so in the result; set the flag to record the real position rather than leaving the app to guess.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011"],
+      "commencement": "In force now (Rule 6(1)(a))"
+    },
+    {
+      "id": "R5",
+      "order": 5,
+      "label": "Net quantity in the standard unit",
+      "level": "product",
+      "applicability": "Every covered package. Packages outside Rules 3 and 26 scope are not checked.",
+      "passCondition": "Net quantity is declared, with a quantity and a Rule 13 unit, in the standard unit for its kind: grams up to 1,000 g then kilograms, centimetres up to 100 cm then metres, millilitres up to 1,000 ml then litres, or a permitted count descriptor (number, unit, piece, pair, set).",
+      "helpText": "Enter the net quantity as declared on the pack. The unit list now includes cm and the count descriptors the rule allows. The app checks the Rule 13 threshold and tells you when 1,400 ml should be declared as 1.4 l. Unit sale price (R13) is built on this same declaration.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011", "LM_PCR_USP_2022"],
+      "commencement": "In force now (Rule 6(1)(c) with Rule 13)"
+    },
+    {
+      "id": "R6",
+      "order": 6,
+      "label": "Common or generic name on the pack",
+      "level": "product",
+      "applicability": "Every covered package.",
+      "passCondition": "A common or generic name is recorded and is confirmed to be printed on the package or label. A brand-only online product title is not accepted as evidence.",
+      "helpText": "Use the commodity's common or generic name, for example 'Face wash', not a brand name. Rule 6(1)(b) is a package-label duty, so tick the box confirming the name is on the pack: an online product title is not proof that the physical package bears the declaration.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011"],
+      "commencement": "In force now (Rule 6(1)(b))"
+    },
+    {
+      "id": "R7",
+      "order": 7,
+      "label": "Month/year of manufacture or pre-packing (and best-before or use-by where it applies)",
+      "level": "product",
+      "applicability": "Every covered package. A best-before or use-by date is additionally required where the commodity may become unfit for human consumption after a period.",
+      "passCondition": "A valid MM/YYYY month and year of manufacture or pre-packing is recorded, and where a best-before or use-by date applies a valid MM/YYYY date is recorded for it too.",
+      "helpText": "The month and year of manufacture or pre-packing is a generally applicable declaration, so there is no merchant switch that turns it off. If the commodity may become unfit after a period, also enter the best-before or use-by date. Food, cosmetics and seeds have additional sector labelling that this app does not check.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011"],
+      "commencement": "In force now (Rule 6(1)(d) and Rule 6(1)(da))"
+    },
+    {
+      "id": "R8",
+      "order": 8,
+      "label": "Package-label contact and platform customer-care details",
+      "level": "store",
+      "applicability": "Store. The first half is the Rule 6(2) package-label contact; the second half is the e-commerce entity's platform customer care.",
+      "passCondition": "The name and address of the person or office contactable for consumer complaints are filled, and the e-commerce entity's own customer-care contact is published separately. Telephone and e-mail are recorded where available. The package-label telephone or e-mail does not satisfy the platform duty.",
+      "helpText": "Rule 6(2) requires the name and address of the person or office contactable for complaints, and telephone and e-mail if available. The 2020 E-Commerce Rules separately require the platform's customer-care details. These are two different duties, so this screen asks for both, does not accept a name and phone number as a substitute for the address, and does not accept the package-label telephone or e-mail as the platform's customer care.",
+      "enabled": true,
+      "sources": ["LM_PCR_2011", "CP_ECOM_2020"],
+      "commencement": "In force now (Rule 6(2) and E-Commerce Rule 4(2)(d))"
+    },
+    {
+      "id": "R9",
+      "order": 9,
+      "label": "Pre-purchase disclosures: returns, refunds, exchange, warranty, delivery, payment modes, grievance redressal",
+      "level": "store",
+      "applicability": "Store. The best-before/use-before item applies only where the seller is required to publish it.",
+      "passCondition": "Every applicable disclosure has live, accessible content: the terms written in the app, or a link that responded successfully when it was last checked within the freshness window (7 days by default). Missing disclosures, broken links, links that were never checked and links whose check has aged out do not pass.",
+      "helpText": "The old six-item list was incomplete. The 2020 Rules also cover warranty and guarantee, modes of payment, grievance-redressal information and other information needed for an informed decision, as well as return-shipping cost and best-before/use-before information. A link is only accepted once it has been checked and answers successfully, and the check has to be recent: a page that answered months ago says nothing about today. The app re-checks every link nightly and on demand, so a working link stays current without anyone having to remember the button.",
+      "enabled": true,
+      "sources": ["CP_ECOM_2020"],
+      "commencement": "In force now (Rules 5(3)(c), 6(5)(d), 7(1)(a))"
+    },
+    {
+      "id": "R10",
+      "order": 10,
+      "label": "Grievance officer displayed, with acknowledgement and redressal evidence",
+      "level": "store",
+      "applicability": "Store.",
+      "passCondition": "The grievance officer's name, designation and contact details are filled and displayed on the storefront, and no recorded complaint is past the 48-hour acknowledgement or one-month redressal period.",
+      "helpText": "Name, designation and contact details must be displayed clearly and accessibly on the platform. Complaints must be acknowledged within 48 hours and redressed within one month of receipt. The block shows the details; the complaint register in this app is what shows the timings are actually met. Displaying a block is not evidence that complaints are answered.",
+      "enabled": true,
+      "sources": ["CP_ECOM_2020"],
+      "commencement": "In force now (Rules 4(2)(d), 4(4), 4(5))"
+    },
+    {
+      "id": "R11",
+      "order": 11,
+      "label": "Prior price on a reduced price, from a complete 30-day lookback",
+      "level": "product",
+      "applicability": "Products where a price reduction has been announced and the shopper sees a reduced price.",
+      "passCondition": "The prior price block is live, the announcement event and consumer-facing price are recorded, and every reduced variant has a prior price computed from the lowest price during the full 30 days before the announcement. A short history does not pass and is not published as a prior price.",
+      "helpText": "The prior price is the lowest price of the good during the 30 days before the reduction was announced, not merely before a variant price changed. A partial install-to-date history is not a statutory prior price, so nothing is published until a complete 30-day lookback exists. A discount code or automatic discount that announces a reduction may fall within the rule; the app reads variant prices from Shopify and cannot see checkout-level discounts, so record those announcements on the Price announcements screen with the date, the price the shopper pays, the mechanism and any conditions. A reduction nobody records is still measured, from the announcement the app can derive from its own price history, and the result says which of the two it used.",
+      "enabled": true,
+      "sources": ["CP_ECOM_2026"],
+      "commencement": "Notified 2026 E-Commerce amendment; commencement not verified from the official copy"
+    },
+    {
+      "id": "R12",
+      "order": 12,
+      "label": "Dark-pattern self-audit (13 items; 12-month cycle is app policy)",
+      "level": "store",
+      "applicability": "Store.",
+      "passCondition": "A self-audit record answering all thirteen patterns named in Annexure 1 of the 2023 Guidelines was completed within the last 12 months (an app policy period, not a statutory cadence).",
+      "helpText": "The thirteen patterns are the ones the 2023 Guidelines name. The 12-month validity and 11-month reminder are this app's own product policy: the Guidelines prescribe neither. The 2026 E-Commerce amendment adds yearly self-audit and certificate wording, which this app does not apply while that commencement is unverified. The record is your own answers and is not a certificate.",
+      "enabled": true,
+      "sources": ["DARK_PATTERNS_2023", "CP_ECOM_2026"],
+      "commencement": "Guidelines in force now; the yearly-audit wording is in the unverified 2026 amendment"
+    },
+    {
+      "id": "R13",
+      "order": 13,
+      "label": "Unit sale price per standard unit",
+      "level": "product",
+      "applicability": "Covered pre-packaged commodities where the retail sale price differs from the unit sale price. Wholesale packages and packages outside Rules 3 and 26 scope are not checked.",
+      "passCondition": "The unit sale price is declared in the applicable standard unit (per kg, litre, metre or number) and equals the retail sale price divided by the standard quantity, rounded to the nearest two decimal places.",
+      "helpText": "Rule 6(11) requires the unit sale price for covered packages, and the primary text available does not establish a blanket e-commerce exemption, so the declaration is checked here. The app computes the expected value from MRP and net quantity and compares it to what the pack declares, allowing for rounding to two decimal places. Declaring trailing zeroes is optional; the rounding is what matters. Where MRP equals the unit sale price the declaration is not required.",
+      "enabled": true,
+      "sources": ["LM_PCR_USP_2022", "LM_PCR_2011"],
+      "commencement": "In force since 1 January 2024 (final relevant commencement of the Rule 6(11) amendment)"
+    }
+  ],
+  "knownGaps": [
+    "The 2026 E-Commerce amendment is notified, but the official copy available prints missing/garbled G.S.R. and commencement fields. The 1 January 2027 date shown in this app is a supplied date, not Gazette-verified, so no claim rests on it.",
+    "The country-of-origin filter is not enforceable today: G.S.R. 128(E) notified it from 1 July 2026 and the later G.S.R. 312(E) substitutes/defers it to 1 July 2027. The app gives preparation instructions only.",
+    "The rule set covers marketplace and inventory (D2C) models: the 2020 E-Commerce Rules apply to both, with extra intermediary duties for marketplaces. The app does not implement marketplace-specific seller allocation duties.",
+    "Prior price is computed from variant price history read through the Shopify Admin API. Discount codes and automatic discounts applied at checkout are not visible to the app; where such a reduction is announced, record its event, mechanism, consumer-facing price and conditions on the Price announcements screen so the published prior price is not misleading.",
+    "A short price history is never published as a statutory prior price. Nothing is shown until a complete 30-day lookback exists, and because price tracking starts at install and prices from before install are not backfilled, a reduction announced in the first 30 days after install never gains a statutory prior price from this app.",
+    "FSSAI labelling, Legal Metrology sector overlays (food, cosmetics, seeds), GST invoicing and other sector regimes are out of scope.",
+    "The 12-month self-audit validity and 11-month reminder are product policy, not a cadence prescribed by the 2023 Guidelines.",
+    "verifiedAgainstGazette stays false and the version stays 2026.1-draft until a qualified reviewer signs every rule."
+  ]
+}

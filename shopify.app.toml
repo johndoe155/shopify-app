@@ -1,0 +1,41 @@
+# Shopify app configuration.
+#
+# Replace the placeholders through `shopify app config link`, which writes the
+# real client_id and app URLs from your Partner dashboard app.
+client_id = "REPLACE_WITH_CLIENT_ID"
+name = "India Legal Metrology & MRP"
+handle = "india-legal-metrology-mrp"
+application_url = "https://example.com"
+embedded = true
+
+[access_scopes]
+# Least privilege: products are the only data the app reads or writes.
+# read_themes is deliberately NOT requested; block detection reads the public
+# storefront instead (see DECISIONS.md).
+scopes = "read_products,write_products"
+
+[auth]
+redirect_urls = ["https://example.com/auth/callback"]
+
+[webhooks]
+api_version = "2026-10"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["products/create", "products/update", "products/delete"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["shop/update"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "/webhooks"
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true

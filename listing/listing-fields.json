@@ -1,0 +1,37 @@
+{
+  "$comment": "Single source of truth for the App Store listing fields. `npm run check:listing` validates every value against the limits below and fails if the markdown in app-store-listing.md drifts from this file. Limits were checked against Shopify's own documentation and the Partner dashboard field list on 30 Oct 2026 (see docs/LISTING_FACTS.md); they still need one confirmation inside the Partner dashboard before submission, because Shopify can change them without notice.",
+  "limits": {
+    "name": 30,
+    "subtitle": 62,
+    "introduction": 100,
+    "details": 500,
+    "feature": 80,
+    "features": 5,
+    "searchTerms": 5
+  },
+  "sources": [
+    "https://shopify.dev/docs/apps/launch/shopify-app-store/best-practices (app name: 30 characters or fewer)",
+    "Partner dashboard listing form: app card subtitle 62, app introduction 100, app details 500, five features of 80, five search terms"
+  ],
+  "verifiedInPartnerDashboard": false,
+  "fields": {
+    "name": "India Legal Metrology & MRP",
+    "subtitle": "Check MRP, origin, unit price and prior price rules",
+    "introduction": "Check listings against India's declaration, e-commerce and prior-price rules.",
+    "details": "Scan your catalogue against a fixed checklist of Indian product declarations, fix the gaps in bulk, and show MRP, country of origin, unit sale price, the grievance officer and a 30-day prior price on your storefront. Core declarations and the 2020 e-commerce rules apply now. Informational only, not legal advice.",
+    "features": [
+      "Scan every product and variant against India's declaration checklist",
+      "Fix gaps in bulk by rule, vendor, product type, or CSV import",
+      "Show MRP, origin, net quantity and unit sale price on product pages",
+      "Grievance officer block with 48-hour and one-month timings",
+      "Prior price from a complete 30-day lookback, suppressed until then"
+    ],
+    "searchTerms": [
+      "legal metrology",
+      "MRP compliance",
+      "country of origin",
+      "prior price",
+      "grievance officer"
+    ]
+  }
+}
