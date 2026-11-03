@@ -15,6 +15,11 @@ import type { CatalogSource, MetafieldWriter } from "~/services/ports";
 import { ShopifyMetafieldWriter } from "~/services/metafields.server";
 import { ShopifyCatalogSource } from "~/services/catalog.server";
 import { syncPlanFromShopify } from "~/services/billing.server";
+import {
+  BillingSyncCache,
+  DEFAULT_BILLING_SYNC_TTL_MS,
+  readMsSetting,
+} from "~/services/billing-sync-cache.server";
 import { DEMO_SHOP_DOMAIN, getDemoState } from "~/demo/demo.server";
 
 export function isDemoMode(): boolean {
@@ -40,7 +45,29 @@ export interface AppContext {
   shopDomain: string;
 }
 
-export async function requireAppContext(request: Request): Promise<AppContext> {
+/**
+ * Billing status is checked against Shopify at most once per TTL window per shop
+ * (BILLING_SYNC_TTL_MS, default 5 minutes; 0 checks on every load, as before).
+ * See app/services/billing-sync-cache.server.ts.
+ */
+const billingSync = new BillingSyncCache({
+  ttlMs: readMsSetting(process.env.BILLING_SYNC_TTL_MS, DEFAULT_BILLING_SYNC_TTL_MS),
+});
+
+/** Forget a shop's cached billing check, so the next load asks Shopify again. */
+export function invalidateBillingSync(shopDomain: string): void {
+  billingSync.invalidate(shopDomain);
+}
+
+export interface RequireAppContextOptions {
+  /** Ask Shopify for the subscription even if it was checked recently. */
+  freshBilling?: boolean;
+}
+
+export async function requireAppContext(
+  request: Request,
+  options: RequireAppContextOptions = {},
+): Promise<AppContext> {
   if (isDemoMode()) {
     const state = await getDemoState();
     const shop = (await state.repo.getShop(DEMO_SHOP_DOMAIN)) ?? state.shop;
@@ -77,9 +104,15 @@ export async function requireAppContext(request: Request): Promise<AppContext> {
   }
 
   // Billing status check on app load (F9). Never upgrades a shop automatically.
+  // Skipped when the shop was checked recently; the billing page forces a check.
   try {
-    const synced = await syncPlanFromShopify({ shop, repo, admin });
-    shop = synced.shop;
+    const current = shop;
+    shop = await billingSync.run(
+      session.shop,
+      async () => (await syncPlanFromShopify({ shop: current, repo, admin })).shop,
+      current,
+      options.freshBilling === true,
+    );
   } catch (error) {
     console.error(
       `[billing] could not read the subscription for ${session.shop}: ${

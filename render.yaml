@@ -1,0 +1,35 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Create it with: Render dashboard -> New -> Blueprint -> pick this repository.
+services:
+  - type: web
+    name: india-legal-mrp
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Pick the region closest to your Neon database (and your testers):
+    # oregon | ohio | virginia | frankfurt | singapore
+    region: singapore
+    # A paid instance stays awake. Free instances sleep after ~15 minutes idle, so
+    # the first tester load is slow and the in-process job worker stops.
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # From your PRODUCTION app in the Shopify Dev Dashboard. Render asks for
+      # every `sync: false` value when you create the Blueprint.
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      # Your service URL, e.g. https://india-legal-mrp.onrender.com (no trailing slash).
+      - key: SHOPIFY_APP_URL
+        sync: false
+      - key: SCOPES
+        value: read_products,write_products
+      # Neon DIRECT connection string (host without "-pooler").
+      - key: DATABASE_URL
+        sync: false
+      # Fresh random secret for /api/jobs/* (replaces the one that was shared in chat).
+      - key: JOBS_SECRET
+        generateValue: true
+      - key: DEMO_MODE
+        value: "0"

@@ -1,0 +1,325 @@
+--- a/.env.example
++++ b/.env.example
+@@ -46,6 +46,14 @@
+ PORT=3000
+ 
+ # ---------------------------------------------------------------------------
++# Performance
++# ---------------------------------------------------------------------------
++# How long (milliseconds) a successful Shopify billing check is trusted before
++# the app asks Shopify again. The Plan page always checks fresh. Default 300000
++# (5 minutes). 0 restores the old behaviour of checking on every page load.
++# BILLING_SYNC_TTL_MS=300000
++
++# ---------------------------------------------------------------------------
+ # Merchant-facing support
+ # ---------------------------------------------------------------------------
+ # Shown on the Help page and in exports. Leave empty and the UI hides the
+--- a/app/context.server.ts
++++ b/app/context.server.ts
+@@ -15,6 +15,11 @@
+ import { ShopifyMetafieldWriter } from "~/services/metafields.server";
+ import { ShopifyCatalogSource } from "~/services/catalog.server";
+ import { syncPlanFromShopify } from "~/services/billing.server";
++import {
++  BillingSyncCache,
++  DEFAULT_BILLING_SYNC_TTL_MS,
++  readMsSetting,
++} from "~/services/billing-sync-cache.server";
+ import { DEMO_SHOP_DOMAIN, getDemoState } from "~/demo/demo.server";
+ 
+ export function isDemoMode(): boolean {
+@@ -40,7 +45,29 @@
+   shopDomain: string;
+ }
+ 
+-export async function requireAppContext(request: Request): Promise<AppContext> {
++/**
++ * Billing status is checked against Shopify at most once per TTL window per shop
++ * (BILLING_SYNC_TTL_MS, default 5 minutes; 0 checks on every load, as before).
++ * See app/services/billing-sync-cache.server.ts.
++ */
++const billingSync = new BillingSyncCache({
++  ttlMs: readMsSetting(process.env.BILLING_SYNC_TTL_MS, DEFAULT_BILLING_SYNC_TTL_MS),
++});
++
++/** Forget a shop's cached billing check, so the next load asks Shopify again. */
++export function invalidateBillingSync(shopDomain: string): void {
++  billingSync.invalidate(shopDomain);
++}
++
++export interface RequireAppContextOptions {
++  /** Ask Shopify for the subscription even if it was checked recently. */
++  freshBilling?: boolean;
++}
++
++export async function requireAppContext(
++  request: Request,
++  options: RequireAppContextOptions = {},
++): Promise<AppContext> {
+   if (isDemoMode()) {
+     const state = await getDemoState();
+     const shop = (await state.repo.getShop(DEMO_SHOP_DOMAIN)) ?? state.shop;
+@@ -77,9 +104,15 @@
+   }
+ 
+   // Billing status check on app load (F9). Never upgrades a shop automatically.
++  // Skipped when the shop was checked recently; the billing page forces a check.
+   try {
+-    const synced = await syncPlanFromShopify({ shop, repo, admin });
+-    shop = synced.shop;
++    const current = shop;
++    shop = await billingSync.run(
++      session.shop,
++      async () => (await syncPlanFromShopify({ shop: current, repo, admin })).shop,
++      current,
++      options.freshBilling === true,
++    );
+   } catch (error) {
+     console.error(
+       `[billing] could not read the subscription for ${session.shop}: ${
+--- a/app/routes/app.billing.tsx
++++ b/app/routes/app.billing.tsx
+@@ -6,14 +6,14 @@
+ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+ import { Form, useActionData, useLoaderData } from "react-router";
+ import { Badge, Banner, BlockStack, Box, Button, Card, InlineStack, Layout, Page, Text } from "@shopify/polaris";
+-import { requireAppContext } from "~/context.server";
++import { invalidateBillingSync, requireAppContext } from "~/context.server";
+ import { PLANS, getPlan, usageFor, type BillingInterval, type PlanId } from "~/domain/plans";
+ import { billingPlanName, markSubscriptionCancelled, planDisplay } from "~/services/billing.server";
+ import { ChecklistDisclaimer } from "~/components/ui";
+ import { formatShortDate } from "~/domain/copy";
+ 
+ export async function loader({ request }: LoaderFunctionArgs) {
+-  const ctx = await requireAppContext(request);
++  const ctx = await requireAppContext(request, { freshBilling: true });
+   const usage = usageFor(ctx.shop.plan, ctx.shop.lastScanProductCount);
+   const display = planDisplay(ctx.shop);
+   return {
+@@ -40,7 +40,7 @@
+ }
+ 
+ export async function action({ request }: ActionFunctionArgs) {
+-  const ctx = await requireAppContext(request);
++  const ctx = await requireAppContext(request, { freshBilling: true });
+   const form = await request.formData();
+   const intent = String(form.get("intent") ?? "");
+ 
+@@ -54,6 +54,7 @@
+     if (planId === "free") {
+       // Downgrading to free is handled by cancelling the subscription in Shopify.
+       const shop = await markSubscriptionCancelled({ shop: ctx.shop, repo: ctx.repo });
++      invalidateBillingSync(ctx.shopDomain);
+       return Response.json({
+         ok: true,
+         message:
+--- /dev/null
++++ b/app/services/billing-sync-cache.server.ts
+@@ -0,0 +1,92 @@
++/**
++ * Remembers when a shop's Shopify billing status was last checked, so the app
++ * does not ask Shopify on every page load.
++ *
++ * Why this exists: `requireAppContext()` used to call Shopify's GraphQL API for
++ * the active subscription on every loader. That call sits on the critical path
++ * of every navigation (a round trip of one to two seconds is normal) and the
++ * layout loader and the page loader both made it. Billing changes rarely, and
++ * the billing page itself always re-checks, so the result is trusted for a few
++ * minutes instead.
++ *
++ * Behaviour, per shop key:
++ *  - a successful check is trusted for `ttlMs`;
++ *  - a failed check is not retried for `retryMs`, so an outage does not make
++ *    every page wait for a timeout;
++ *  - concurrent callers share one in-flight check;
++ *  - `force` always checks (used by the billing page);
++ *  - `invalidate` forgets the key.
++ *
++ * State is per process. That is fine: the worst case on a multi-instance
++ * deployment is one extra check per instance per TTL window.
++ */
++export interface BillingSyncCacheOptions {
++  /** How long a successful check is trusted. Default 5 minutes. */
++  ttlMs?: number;
++  /** How long to wait before retrying after a failed check. Default 30 seconds. */
++  retryMs?: number;
++  /** Clock, injectable for tests. */
++  now?: () => number;
++}
++
++interface Entry {
++  checkedAt: number;
++  ok: boolean;
++  inflight?: Promise<unknown>;
++}
++
++export const DEFAULT_BILLING_SYNC_TTL_MS = 5 * 60_000;
++export const DEFAULT_BILLING_SYNC_RETRY_MS = 30_000;
++
++/** Reads a millisecond setting from the environment; anything invalid falls back. */
++export function readMsSetting(raw: string | undefined, fallback: number): number {
++  if (raw === undefined || raw.trim() === "") return fallback;
++  const value = Number(raw);
++  return Number.isFinite(value) && value >= 0 ? value : fallback;
++}
++
++export class BillingSyncCache {
++  private readonly entries = new Map<string, Entry>();
++  private readonly ttlMs: number;
++  private readonly retryMs: number;
++  private readonly now: () => number;
++
++  constructor(options: BillingSyncCacheOptions = {}) {
++    this.ttlMs = options.ttlMs ?? DEFAULT_BILLING_SYNC_TTL_MS;
++    this.retryMs = options.retryMs ?? DEFAULT_BILLING_SYNC_RETRY_MS;
++    this.now = options.now ?? Date.now;
++  }
++
++  /**
++   * Runs `sync` unless a recent check makes it unnecessary, in which case
++   * `current` is returned untouched. A rejected `sync` is rethrown to every caller
++   * that was waiting on it.
++   */
++  async run<T>(key: string, sync: () => Promise<T>, current: T, force = false): Promise<T> {
++    const entry = this.entries.get(key);
++    if (entry?.inflight) return entry.inflight as Promise<T>;
++
++    if (!force && entry) {
++      const trustedFor = entry.ok ? this.ttlMs : this.retryMs;
++      if (this.now() - entry.checkedAt < trustedFor) return current;
++    }
++
++    const inflight = sync().then(
++      (value) => {
++        this.entries.set(key, { checkedAt: this.now(), ok: true });
++        return value;
++      },
++      (error: unknown) => {
++        this.entries.set(key, { checkedAt: this.now(), ok: false });
++        throw error;
++      },
++    );
++    this.entries.set(key, { checkedAt: entry?.checkedAt ?? 0, ok: entry?.ok ?? false, inflight });
++    return inflight;
++  }
++
++  /** Forget a shop so the next call checks again (for example after a plan change). */
++  invalidate(key: string): void {
++    this.entries.delete(key);
++  }
++}
+--- /dev/null
++++ b/tests/billing-sync-cache.test.ts
+@@ -0,0 +1,111 @@
++import { describe, expect, it } from "vitest";
++import { BillingSyncCache, readMsSetting } from "~/services/billing-sync-cache.server";
++
++function harness(options: { ttlMs?: number; retryMs?: number } = {}) {
++  let clock = 1_000_000;
++  const cache = new BillingSyncCache({ ...options, now: () => clock });
++  let calls = 0;
++  const sync = async () => {
++    calls += 1;
++    return `synced-${calls}`;
++  };
++  return {
++    cache,
++    sync,
++    calls: () => calls,
++    advance: (ms: number) => {
++      clock += ms;
++    },
++  };
++}
++
++describe("billing sync cache", () => {
++  it("checks Shopify the first time and trusts the result afterwards", async () => {
++    const h = harness({ ttlMs: 60_000 });
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored")).toBe("synced-1");
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored")).toBe("stored");
++    expect(h.calls()).toBe(1);
++  });
++
++  it("checks again once the trusted window has passed", async () => {
++    const h = harness({ ttlMs: 60_000 });
++    await h.cache.run("a.myshopify.com", h.sync, "stored");
++    h.advance(59_999);
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored")).toBe("stored");
++    h.advance(2);
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored")).toBe("synced-2");
++    expect(h.calls()).toBe(2);
++  });
++
++  it("keeps shops separate", async () => {
++    const h = harness();
++    await h.cache.run("a.myshopify.com", h.sync, "stored");
++    await h.cache.run("b.myshopify.com", h.sync, "stored");
++    expect(h.calls()).toBe(2);
++  });
++
++  it("shares one in-flight check between concurrent callers", async () => {
++    const h = harness();
++    const results = await Promise.all([
++      h.cache.run("a.myshopify.com", h.sync, "stored"),
++      h.cache.run("a.myshopify.com", h.sync, "stored"),
++      h.cache.run("a.myshopify.com", h.sync, "stored"),
++    ]);
++    expect(results).toEqual(["synced-1", "synced-1", "synced-1"]);
++    expect(h.calls()).toBe(1);
++  });
++
++  it("force always checks", async () => {
++    const h = harness();
++    await h.cache.run("a.myshopify.com", h.sync, "stored");
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored", true)).toBe("synced-2");
++  });
++
++  it("invalidate makes the next call check again", async () => {
++    const h = harness();
++    await h.cache.run("a.myshopify.com", h.sync, "stored");
++    h.cache.invalidate("a.myshopify.com");
++    expect(await h.cache.run("a.myshopify.com", h.sync, "stored")).toBe("synced-2");
++  });
++
++  it("backs off after a failure, then retries", async () => {
++    const h = harness({ retryMs: 30_000 });
++    let attempts = 0;
++    const flaky = async () => {
++      attempts += 1;
++      if (attempts === 1) throw new Error("timeout");
++      return "recovered";
++    };
++    await expect(h.cache.run("a.myshopify.com", flaky, "stored")).rejects.toThrow("timeout");
++    expect(await h.cache.run("a.myshopify.com", flaky, "stored")).toBe("stored");
++    expect(attempts).toBe(1);
++    h.advance(30_001);
++    expect(await h.cache.run("a.myshopify.com", flaky, "stored")).toBe("recovered");
++  });
++
++  it("rejects every waiting caller when the shared check fails", async () => {
++    const h = harness();
++    const failing = async () => {
++      throw new Error("boom");
++    };
++    const settled = await Promise.allSettled([
++      h.cache.run("a.myshopify.com", failing, "stored"),
++      h.cache.run("a.myshopify.com", failing, "stored"),
++    ]);
++    expect(settled.map((s) => s.status)).toEqual(["rejected", "rejected"]);
++  });
++});
++
++describe("readMsSetting", () => {
++  it("uses the fallback for missing, empty or invalid values", () => {
++    expect(readMsSetting(undefined, 5)).toBe(5);
++    expect(readMsSetting("", 5)).toBe(5);
++    expect(readMsSetting("abc", 5)).toBe(5);
++    expect(readMsSetting("-1", 5)).toBe(5);
++  });
++
++  it("accepts zero (always check) and positive numbers", () => {
++    expect(readMsSetting("0", 5)).toBe(0);
++    expect(readMsSetting("120000", 5)).toBe(120000);
++  });
++});

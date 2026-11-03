@@ -1,0 +1,20 @@
+# Never bake secrets or local state into the image.
+.env
+.env.*
+!.env.example
+.shopify
+.react-router
+.git
+node_modules
+build
+dev.log
+*.patch
+*.log
+
+# Not needed at runtime (the theme extension is deployed with `shopify app deploy`).
+extensions
+listing
+docs
+tests
+scripts
+*.md

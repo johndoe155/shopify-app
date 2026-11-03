@@ -1,0 +1,36 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "9c42d0ad58be67b4236c16d4e2cfd598"
+name = "ILM & MRP (prod)"
+application_url = "https://india-legal-mrp.onrender.com"
+embedded = true
+
+[webhooks]
+api_version = "2026-10"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["products/create", "products/update", "products/delete"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["shop/update"]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "/webhooks"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products,write_products"
+
+[auth]
+redirect_urls = [ "https://india-legal-mrp.onrender.com/auth/callback" ]
+
+[build]
+include_config_on_deploy = true
+automatically_update_urls_on_dev = false

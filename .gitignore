@@ -6,6 +6,8 @@ node_modules
 !.env.example
 *.log
 .DS_Store
+.shopify
+.react-router
 /prisma/dev.sqlite*
 /screenshots/*.png
 !/listing/screenshots/*.png

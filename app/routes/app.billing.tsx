@@ -6,14 +6,14 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData } from "react-router";
 import { Badge, Banner, BlockStack, Box, Button, Card, InlineStack, Layout, Page, Text } from "@shopify/polaris";
-import { requireAppContext } from "~/context.server";
+import { invalidateBillingSync, requireAppContext } from "~/context.server";
 import { PLANS, getPlan, usageFor, type BillingInterval, type PlanId } from "~/domain/plans";
 import { billingPlanName, markSubscriptionCancelled, planDisplay } from "~/services/billing.server";
 import { ChecklistDisclaimer } from "~/components/ui";
 import { formatShortDate } from "~/domain/copy";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const ctx = await requireAppContext(request);
+  const ctx = await requireAppContext(request, { freshBilling: true });
   const usage = usageFor(ctx.shop.plan, ctx.shop.lastScanProductCount);
   const display = planDisplay(ctx.shop);
   return {
@@ -40,7 +40,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const ctx = await requireAppContext(request);
+  const ctx = await requireAppContext(request, { freshBilling: true });
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
@@ -54,6 +54,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (planId === "free") {
       // Downgrading to free is handled by cancelling the subscription in Shopify.
       const shop = await markSubscriptionCancelled({ shop: ctx.shop, repo: ctx.repo });
+      invalidateBillingSync(ctx.shopDomain);
       return Response.json({
         ok: true,
         message:
