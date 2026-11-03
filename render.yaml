@@ -10,7 +10,7 @@ services:
     region: singapore
     # A paid instance stays awake. Free instances sleep after ~15 minutes idle, so
     # the first tester load is slow and the in-process job worker stops.
-    plan: starter
+    plan: free
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
