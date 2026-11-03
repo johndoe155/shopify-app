@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile
     # Pick the region closest to your Neon database (and your testers):
     # oregon | ohio | virginia | frankfurt | singapore
-    region: singapore
+    region: frankfurt
     # A paid instance stays awake. Free instances sleep after ~15 minutes idle, so
     # the first tester load is slow and the in-process job worker stops.
     plan: free
