@@ -21,7 +21,7 @@ topics = ["shop/update"]
 uri = "/webhooks"
 
 [[webhooks.subscriptions]]
-topics = ["customers/data_request", "customers/redact", "shop/redact"]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
 uri = "/webhooks"
 
 [access_scopes]
@@ -32,5 +32,4 @@ scopes = "read_products,write_products"
 redirect_urls = [ "https://india-legal-mrp.onrender.com/auth/callback" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = false

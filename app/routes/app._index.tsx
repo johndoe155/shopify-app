@@ -4,7 +4,7 @@
  * reminder, the countdown and the plan/usage indicator.
  */
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useLoaderData, useNavigation, useSearchParams, useSubmit } from "react-router";
+import { Form, Link, redirect, useLoaderData, useNavigation, useSearchParams, useSubmit } from "react-router";
 import {
   Badge,
   Banner,
@@ -57,6 +57,13 @@ const PAGE_SIZE = 25;
 export async function loader({ request }: LoaderFunctionArgs) {
   const ctx = await requireAppContext(request);
   const url = new URL(request.url);
+  // First visit after an install or a reinstall: show the welcome screen, whose
+  // "Start the scan" button records that onboarding is done. Nothing else linked
+  // to /app/welcome, so no install ever saw it. The query string is kept because
+  // it carries the embedded-app parameters (shop, host, embedded, id_token).
+  if (!ctx.shop.onboardingCompletedAt) {
+    return redirect(`/app/welcome${url.search}`);
+  }
   const report = await loadScanReport(ctx);
   const now = new Date();
   const audit = await ctx.repo.latestAuditRecord(ctx.shop.id);

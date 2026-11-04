@@ -167,11 +167,23 @@ export async function enqueueJob(
   // folded into the queued job instead of being dropped: the publish it joined
   // may already have been claimed, so "already queued" is not "already covered".
   if (!queued) {
-    const merged = await (queue as DurableJobQueue).mergeProductIds(
-      key ?? defaultJobKey(name, payload),
-      payload,
-    );
-    if (merged) startJobWorker();
+    const dedupeKey = key ?? defaultJobKey(name, payload);
+    const merged = await (queue as DurableJobQueue).mergeProductIds(dedupeKey, payload);
+    if (merged) {
+      startJobWorker();
+      return { queued: false, durable: true, merged };
+    }
+    // Nothing was merged because the job that owns this key has already been
+    // claimed or has finished (only a pending job can take more ids). Product ids
+    // that arrive after that point are not covered by it, and dropping them left
+    // those products' prior price unpublished until the nightly run. Queue them
+    // under their own key instead.
+    const ids = Array.isArray(payload.productIds) ? payload.productIds : [];
+    if (ids.length > 0) {
+      const followUp = await queue.enqueue(name, payload, `${dedupeKey}:late:${Date.now()}`, options);
+      if (followUp) startJobWorker();
+      return { queued: followUp, durable: true, merged: false };
+    }
     return { queued: false, durable: true, merged };
   }
   startJobWorker();

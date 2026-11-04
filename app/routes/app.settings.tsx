@@ -138,7 +138,30 @@ export async function action({ request }: ActionFunctionArgs) {
     confirmPriorPriceBlock: bool("confirmPriorPriceBlock"),
   };
 
-  const result = await saveShopSettings({ shop: ctx.shop, repo: ctx.repo, writer: ctx.writer, input });
+  let result: Awaited<ReturnType<typeof saveShopSettings>>;
+  try {
+    result = await saveShopSettings({ shop: ctx.shop, repo: ctx.repo, writer: ctx.writer, input });
+  } catch (error) {
+    // A failure here used to surface as the generic "Unexpected Server Error"
+    // page, which hides the cause in production. Log it, and keep the merchant on
+    // the form with their input.
+    console.error(
+      `[settings] could not save the settings for ${ctx.shopDomain}: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+    );
+    return {
+      ok: false,
+      intent,
+      errors: [
+        { field: "form", message: "The settings could not be saved. Nothing was changed; please try again." },
+      ] as Array<{ field: string; message: string }>,
+      mirrored: false,
+      mirrorError: null as string | null,
+      policySummary: null,
+      checks: null,
+    };
+  }
   return {
     ok: result.errors.length === 0,
     intent,

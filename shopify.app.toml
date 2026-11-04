@@ -33,7 +33,7 @@ topics = ["shop/update"]
 uri = "/webhooks"
 
 [[webhooks.subscriptions]]
-topics = ["customers/data_request", "customers/redact", "shop/redact"]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
 uri = "/webhooks"
 
 [build]

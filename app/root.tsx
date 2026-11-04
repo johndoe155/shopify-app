@@ -1,7 +1,8 @@
-import type { LinksFunction, LoaderFunctionArgs } from "react-router";
+import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, isRouteErrorResponse, useRouteError } from "react-router";
 import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
 import en from "@shopify/polaris/locales/en.json";
+import { boundary } from "@shopify/shopify-app-react-router/server";
 import { addDocumentResponseHeaders } from "~/shopify.server";
 import { isDemoMode } from "~/context.server";
 import { assertRuntimeConfig } from "~/config.server";
@@ -21,6 +22,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
   return Response.json({ demo: true });
 }
+
+/**
+ * The loader above puts the Content-Security-Policy `frame-ancestors` header on
+ * its own response, but a React Router document response only carries what the
+ * route's `headers` export returns, so without this the header was dropped.
+ */
+export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -69,14 +77,29 @@ function DemoBanner() {
   );
 }
 
+/**
+ * Shopify's SDK throws Responses on purpose: the redirect out of the iframe for
+ * re-authorisation or the billing confirmation is an HTML page with a script, not an
+ * error. Printing that body as text is what produced the "malformed 200 response
+ * with embedded script text" in QA, so those go to Shopify's own boundary, which
+ * renders the body as markup. Plain statuses (404, 410) and ordinary exceptions
+ * keep the friendly page.
+ */
+function looksLikeMarkup(data: unknown): data is string {
+  return typeof data === "string" && /<\s*(!doctype|html|head|body|script|meta)\b/i.test(data);
+}
+
 export function ErrorBoundary() {
   const error = useRouteError();
+  if (isRouteErrorResponse(error) && looksLikeMarkup(error.data)) {
+    return boundary.error(error);
+  }
   const title = isRouteErrorResponse(error)
-    ? `${error.status} ${error.statusText}`
+    ? `${error.status} ${error.statusText}`.trim()
     : "Something went wrong";
   const message = isRouteErrorResponse(error)
-    ? typeof error.data === "string"
-      ? error.data
+    ? typeof error.data === "string" && error.data.length > 0
+      ? error.data.slice(0, 300)
       : "That page could not be loaded."
     : error instanceof Error
       ? error.message

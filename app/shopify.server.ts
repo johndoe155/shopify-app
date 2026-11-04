@@ -9,6 +9,7 @@ import type { Session } from "@shopify/shopify-app-react-router/server";
 import type { SessionStorage } from "@shopify/shopify-app-session-storage";
 import { buildBillingConfig } from "~/services/billing.server";
 import { ensureMetafieldDefinitions } from "~/services/metafield-definitions.server";
+import { installScanKey, registerInstall } from "~/services/install.server";
 
 export const APP_SCOPES = ["read_products", "write_products"];
 
@@ -126,10 +127,9 @@ const shopify = shopifyApp({
         import("~/jobs/worker.server"),
       ]);
       const repo = new PrismaRepository(prisma);
-      const existing = await repo.getShop(session.shop);
-      if (!existing) {
-        await repo.createShop(session.shop, { plan: "free", planStatus: "NONE" });
-      }
+      // Creates the shop, or brings an uninstalled one back (isActive, onboarding,
+      // plan and scan state). See services/install.server.ts.
+      const { shop } = await registerInstall(repo, session.shop);
 
       try {
         await ensureMetafieldDefinitions(admin);
@@ -144,7 +144,7 @@ const shopify = shopifyApp({
       // F1: the first scan starts automatically, off the request path. The job
       // is persisted before this hook returns, so a crash straight after install
       // still leaves the scan queued rather than silently dropped.
-      await enqueueJob("nightly-scan", { shopDomain: session.shop }, `install-scan:${session.shop}`);
+      await enqueueJob("nightly-scan", { shopDomain: session.shop }, installScanKey(shop));
     },
   },
 });

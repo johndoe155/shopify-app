@@ -14,6 +14,26 @@ import type { ShopRecord } from "~/db/types";
 
 export const BILLING_PLAN_PREFIX = "legal_mrp";
 
+/**
+ * Whether the app asks Shopify for TEST charges.
+ *
+ * This used to be `NODE_ENV !== "production"`, but the Render image always runs
+ * with NODE_ENV=production, so a development store was sent real-charge requests
+ * that it cannot confirm. It is now its own switch:
+ *
+ *   BILLING_TEST_MODE=true   test charges (development stores, QA)
+ *   BILLING_TEST_MODE=false  real charges
+ *
+ * When it is unset the old behaviour applies (test outside production, real in
+ * production), so forgetting the variable can never make a live store free.
+ */
+export function isBillingTestMode(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env.BILLING_TEST_MODE?.trim().toLowerCase();
+  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+  return env.NODE_ENV !== "production";
+}
+
 export function billingPlanName(planId: PlanId, interval: Interval): string {
   return `${BILLING_PLAN_PREFIX}_${planId}_${interval}`;
 }

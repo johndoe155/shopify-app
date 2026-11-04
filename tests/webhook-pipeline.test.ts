@@ -118,6 +118,41 @@ describe("products/update through the durable queue", () => {
     expect(claimedNames.filter((name) => name === "rescan-product")).toHaveLength(20);
   });
 
+  it("queues a later update of the same product again, even after the first was processed", async () => {
+    const repo = new MemoryRepository();
+    shop = await repo.createShop("demo.myshopify.com", makeShop());
+    const { queue, seen } = await deliveryQueue(repo);
+    const deliverEvent = async (eventId: string) => {
+      await handleWebhook({
+        topic: "products/update",
+        shopDomain: shop.shopDomain,
+        payload: { admin_graphql_api_id: "gid://shopify/Product/7" },
+        deliveryId: eventId,
+        deps: {
+          repo,
+          now: new Date("2026-12-01T00:00:00.000Z"),
+          enqueue: async (job: WebhookJobRequest) => {
+            const payload = job.productIds
+              ? { shopDomain: job.shopDomain, productIds: job.productIds }
+              : { shopDomain: job.shopDomain, productId: job.productId ?? null };
+            await queue.enqueue(job.name, payload, job.key);
+          },
+        },
+      });
+    };
+
+    await deliverEvent("evt-1");
+    await queue.drainOnce();
+    await deliverEvent("evt-2");
+    await queue.drainOnce();
+    // The same event delivered again is still a no-op.
+    await deliverEvent("evt-2");
+    await queue.drainOnce();
+
+    expect(seen.filter((job) => job.name === "rescan-product")).toHaveLength(2);
+    expect(seen.filter((job) => job.name === "price-snapshot")).toHaveLength(2);
+  });
+
   it("keeps a re-delivered update idempotent", async () => {
     const repo = new MemoryRepository();
     shop = await repo.createShop("demo.myshopify.com", makeShop());

@@ -8,6 +8,7 @@ export default [
   route("webhooks", "routes/webhooks.tsx"),
   route("exports/:kind", "routes/exports.$kind.tsx"),
   route("api/jobs/nightly", "routes/api.jobs.nightly.tsx"),
+  route("api/jobs/tick", "routes/api.jobs.tick.tsx"),
   route("healthz", "routes/healthz.tsx"),
   route("preview/storefront", "routes/preview.storefront.tsx"),
   route("app", "routes/app.tsx", [

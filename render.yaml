@@ -33,3 +33,8 @@ services:
         generateValue: true
       - key: DEMO_MODE
         value: "0"
+      # "true" = Shopify TEST charges (the development store, QA); "false" = real
+      # charges. Asked for explicitly so a live store cannot be left in test mode
+      # by a default. Set "false" before the app is installable by merchants.
+      - key: BILLING_TEST_MODE
+        sync: false

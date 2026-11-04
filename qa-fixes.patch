@@ -1,0 +1,891 @@
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/.env.example shopify-app-main/.env.example
+--- /tmp/orig/shopify-app-main/.env.example	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/.env.example	2026-11-04 07:15:08.257177713 +0000
+@@ -53,6 +53,13 @@
+ # (5 minutes). 0 restores the old behaviour of checking on every page load.
+ # BILLING_SYNC_TTL_MS=300000
+ 
++# Shopify billing mode. "true" requests TEST charges, which is what a development
++# store can approve (QA, the dev-store install). "false" requests real charges.
++# This replaces the old NODE_ENV check, which could never be "test" on Render,
++# where NODE_ENV is always production. Unset: test outside production, real in
++# production. Set it to false before real merchants can install.
++# BILLING_TEST_MODE=true
++
+ # ---------------------------------------------------------------------------
+ # Merchant-facing support
+ # ---------------------------------------------------------------------------
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/config.server.ts shopify-app-main/app/config.server.ts
+--- /tmp/orig/shopify-app-main/app/config.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/config.server.ts	2026-11-04 07:15:08.256733257 +0000
+@@ -148,6 +148,14 @@
+     if (gaps.length > 0) {
+       console.warn(`[config] optional values not set: ${gaps.join("; ")}`);
+     }
++    if (config.environment === "production" && /^(true|1|yes|on)$/i.test(env.BILLING_TEST_MODE?.trim() ?? "")) {
++      // Not an error: a development store needs it. It is loud because a live
++      // store left in test mode is never billed.
++      console.warn(
++        "[config] BILLING_TEST_MODE is on: every plan charge is a Shopify TEST charge. " +
++          "Set BILLING_TEST_MODE=false before real merchants can install.",
++      );
++    }
+     return;
+   }
+   if (config.environment !== "production") {
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/jobs/handlers.server.ts shopify-app-main/app/jobs/handlers.server.ts
+--- /tmp/orig/shopify-app-main/app/jobs/handlers.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/jobs/handlers.server.ts	2026-11-04 07:14:05.817740170 +0000
+@@ -25,6 +25,7 @@
+ import { publishPriorPrices, recordPriceSnapshots } from "~/services/price-history.server";
+ import { detectStorefrontBlocks } from "~/services/blocks.server";
+ import { checkPolicyLinks } from "~/services/policy-links.server";
++import { ensureMetafieldDefinitions } from "~/services/metafield-definitions.server";
+ import { registerHandler, type Job } from "./queue.server";
+ 
+ let registered = false;
+@@ -32,6 +33,7 @@
+ export interface ShopServices {
+   shop: ShopRecord;
+   repo: Repository;
++  admin: Awaited<ReturnType<typeof shopify.unauthenticated.admin>>["admin"];
+   catalog: ShopifyCatalogSource;
+   writer: ShopifyMetafieldWriter;
+ }
+@@ -46,6 +48,7 @@
+   return {
+     shop,
+     repo,
++    admin,
+     catalog: new ShopifyCatalogSource(admin),
+     writer: new ShopifyMetafieldWriter(admin),
+   };
+@@ -66,18 +69,39 @@
+  * The catalogue is read once and passed to each step: one bulk operation for the
+  * whole nightly job, which is what keeps it from colliding with the webhook path.
+  */
+-export async function runNightlyForShop(shopDomain: string, now: Date = new Date()): Promise<{
++export async function runNightlyForShop(
++  shopDomain: string,
++  now: Date = new Date(),
++  options: { runKey?: string } = {},
++): Promise<{
+   ran: boolean;
+   reason?: string;
+ }> {
+   const services = await shopServices(shopDomain);
+   if (!services) return { ran: false, reason: "shop not installed or inactive" };
+-  const { shop, repo, catalog, writer } = services;
++  const { shop, repo, catalog, writer, admin } = services;
+ 
+-  const key = `nightly:${shopDomain}:${isoDate(now)}`;
++  // The scheduled run is idempotent per shop per day. A run somebody asked for
++  // (the install scan, the welcome screen, the dashboard's Rescan button) passes
++  // its own key: with the shared daily key, every such scan after the first one
++  // of the day returned "already ran today" and the dashboard never refreshed.
++  const key = options.runKey ?? `nightly:${shopDomain}:${isoDate(now)}`;
+   const claimed = await repo.claimJobRun(key, "nightly-scan", shop.id);
+   if (!claimed) return { ran: false, reason: "already ran today" };
+ 
++  // Definitions that already exist are not touched by the install hook, so a
++  // shop whose definitions were created without Storefront access (or before
++  // that was set) is corrected on its next scan, not only on a reinstall.
++  try {
++    await ensureMetafieldDefinitions(admin);
++  } catch (error) {
++    console.warn(
++      `[nightly] ${shopDomain}: could not verify the metafield definitions (${
++        error instanceof Error ? error.message : String(error)
++      })`,
++    );
++  }
++
+   try {
+     const products = await catalog.fetchProducts({ force: true });
+     await recordPriceSnapshots({ shop, repo, products, now, source: "nightly_diff" });
+@@ -241,7 +265,10 @@
+     await runNightlyForAllShops();
+     return;
+   }
+-  await runNightlyForShop(shopDomain);
++  // Every queued scan carries its own key (install-scan:*, manual-scan:*), which
++  // the queue has already made unique, so it also names this run. The suffix
++  // keeps a retry of the same job from being mistaken for a finished run.
++  await runNightlyForShop(shopDomain, new Date(), { runKey: `${job.key}:run:${Date.now()}` });
+ }
+ 
+ /** Idempotent: safe to call on every request that might need the handlers. */
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/jobs/worker.server.ts shopify-app-main/app/jobs/worker.server.ts
+--- /tmp/orig/shopify-app-main/app/jobs/worker.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/jobs/worker.server.ts	2026-11-04 07:14:26.136113833 +0000
+@@ -167,11 +167,23 @@
+   // folded into the queued job instead of being dropped: the publish it joined
+   // may already have been claimed, so "already queued" is not "already covered".
+   if (!queued) {
+-    const merged = await (queue as DurableJobQueue).mergeProductIds(
+-      key ?? defaultJobKey(name, payload),
+-      payload,
+-    );
+-    if (merged) startJobWorker();
++    const dedupeKey = key ?? defaultJobKey(name, payload);
++    const merged = await (queue as DurableJobQueue).mergeProductIds(dedupeKey, payload);
++    if (merged) {
++      startJobWorker();
++      return { queued: false, durable: true, merged };
++    }
++    // Nothing was merged because the job that owns this key has already been
++    // claimed or has finished (only a pending job can take more ids). Product ids
++    // that arrive after that point are not covered by it, and dropping them left
++    // those products' prior price unpublished until the nightly run. Queue them
++    // under their own key instead.
++    const ids = Array.isArray(payload.productIds) ? payload.productIds : [];
++    if (ids.length > 0) {
++      const followUp = await queue.enqueue(name, payload, `${dedupeKey}:late:${Date.now()}`, options);
++      if (followUp) startJobWorker();
++      return { queued: followUp, durable: true, merged: false };
++    }
+     return { queued: false, durable: true, merged };
+   }
+   startJobWorker();
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/root.tsx shopify-app-main/app/root.tsx
+--- /tmp/orig/shopify-app-main/app/root.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/root.tsx	2026-11-04 07:16:11.148307392 +0000
+@@ -1,7 +1,8 @@
+-import type { LinksFunction, LoaderFunctionArgs } from "react-router";
++import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
+ import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, isRouteErrorResponse, useRouteError } from "react-router";
+ import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
+ import en from "@shopify/polaris/locales/en.json";
++import { boundary } from "@shopify/shopify-app-react-router/server";
+ import { addDocumentResponseHeaders } from "~/shopify.server";
+ import { isDemoMode } from "~/context.server";
+ import { assertRuntimeConfig } from "~/config.server";
+@@ -22,6 +23,13 @@
+   return Response.json({ demo: true });
+ }
+ 
++/**
++ * The loader above puts the Content-Security-Policy `frame-ancestors` header on
++ * its own response, but a React Router document response only carries what the
++ * route's `headers` export returns, so without this the header was dropped.
++ */
++export const headers: HeadersFunction = (headersArgs) => boundary.headers(headersArgs);
++
+ export function Layout({ children }: { children: React.ReactNode }) {
+   return (
+     <html lang="en">
+@@ -69,14 +77,29 @@
+   );
+ }
+ 
++/**
++ * Shopify's SDK throws Responses on purpose: the redirect out of the iframe for
++ * re-authorisation or the billing confirmation is an HTML page with a script, not an
++ * error. Printing that body as text is what produced the "malformed 200 response
++ * with embedded script text" in QA, so those go to Shopify's own boundary, which
++ * renders the body as markup. Plain statuses (404, 410) and ordinary exceptions
++ * keep the friendly page.
++ */
++function looksLikeMarkup(data: unknown): data is string {
++  return typeof data === "string" && /<\s*(!doctype|html|head|body|script|meta)\b/i.test(data);
++}
++
+ export function ErrorBoundary() {
+   const error = useRouteError();
++  if (isRouteErrorResponse(error) && looksLikeMarkup(error.data)) {
++    return boundary.error(error);
++  }
+   const title = isRouteErrorResponse(error)
+-    ? `${error.status} ${error.statusText}`
++    ? `${error.status} ${error.statusText}`.trim()
+     : "Something went wrong";
+   const message = isRouteErrorResponse(error)
+-    ? typeof error.data === "string"
+-      ? error.data
++    ? typeof error.data === "string" && error.data.length > 0
++      ? error.data.slice(0, 300)
+       : "That page could not be loaded."
+     : error instanceof Error
+       ? error.message
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes/app._index.tsx shopify-app-main/app/routes/app._index.tsx
+--- /tmp/orig/shopify-app-main/app/routes/app._index.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes/app._index.tsx	2026-11-04 07:13:53.628874895 +0000
+@@ -4,7 +4,7 @@
+  * reminder, the countdown and the plan/usage indicator.
+  */
+ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+-import { Form, Link, useLoaderData, useNavigation, useSearchParams, useSubmit } from "react-router";
++import { Form, Link, redirect, useLoaderData, useNavigation, useSearchParams, useSubmit } from "react-router";
+ import {
+   Badge,
+   Banner,
+@@ -57,6 +57,13 @@
+ export async function loader({ request }: LoaderFunctionArgs) {
+   const ctx = await requireAppContext(request);
+   const url = new URL(request.url);
++  // First visit after an install or a reinstall: show the welcome screen, whose
++  // "Start the scan" button records that onboarding is done. Nothing else linked
++  // to /app/welcome, so no install ever saw it. The query string is kept because
++  // it carries the embedded-app parameters (shop, host, embedded, id_token).
++  if (!ctx.shop.onboardingCompletedAt) {
++    return redirect(`/app/welcome${url.search}`);
++  }
+   const report = await loadScanReport(ctx);
+   const now = new Date();
+   const audit = await ctx.repo.latestAuditRecord(ctx.shop.id);
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes/app.billing.tsx shopify-app-main/app/routes/app.billing.tsx
+--- /tmp/orig/shopify-app-main/app/routes/app.billing.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes/app.billing.tsx	2026-11-04 07:16:11.148917650 +0000
+@@ -8,7 +8,12 @@
+ import { Badge, Banner, BlockStack, Box, Button, Card, InlineStack, Layout, Page, Text } from "@shopify/polaris";
+ import { invalidateBillingSync, requireAppContext } from "~/context.server";
+ import { PLANS, getPlan, usageFor, type BillingInterval, type PlanId } from "~/domain/plans";
+-import { billingPlanName, markSubscriptionCancelled, planDisplay } from "~/services/billing.server";
++import {
++  billingPlanName,
++  isBillingTestMode,
++  markSubscriptionCancelled,
++  planDisplay,
++} from "~/services/billing.server";
+ import { ChecklistDisclaimer } from "~/components/ui";
+ import { formatShortDate } from "~/domain/copy";
+ 
+@@ -83,11 +88,32 @@
+ 
+     // Shopify shows its charge confirmation screen. The plan changes only after
+     // the merchant confirms the charge, so there is no auto-upgrade anywhere.
+-    await ctx.billing.request({
+-      plan: billingPlanName(planId, interval),
+-      isTest: process.env.NODE_ENV !== "production",
+-      returnUrl: `${new URL(request.url).origin}/app/billing`,
+-    });
++    try {
++      await ctx.billing.request({
++        plan: billingPlanName(planId, interval),
++        isTest: isBillingTestMode(),
++        returnUrl: `${new URL(request.url).origin}/app/billing`,
++      });
++    } catch (error) {
++      // On success the SDK *throws* a Response (the redirect to Shopify's charge
++      // confirmation page), and that has to keep propagating. Anything else is a failed charge
++      // request: show it instead of the generic "Unexpected Server Error" page,
++      // and log the cause, which production error pages hide.
++      if (error instanceof Response) throw error;
++      console.error(
++        `[billing] could not create the ${planId}/${interval} charge for ${ctx.shopDomain}: ${
++          error instanceof Error ? `${error.name}: ${error.message}` : String(error)
++        }`,
++      );
++      return Response.json(
++        {
++          ok: false,
++          message:
++            "Shopify did not create the charge, so nothing was changed and you have not been billed. Please try again in a moment.",
++        },
++        { status: 502 },
++      );
++    }
+     return Response.json({ ok: true });
+   }
+ 
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes/app.settings.tsx shopify-app-main/app/routes/app.settings.tsx
+--- /tmp/orig/shopify-app-main/app/routes/app.settings.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes/app.settings.tsx	2026-11-04 07:14:55.469029954 +0000
+@@ -138,7 +138,30 @@
+     confirmPriorPriceBlock: bool("confirmPriorPriceBlock"),
+   };
+ 
+-  const result = await saveShopSettings({ shop: ctx.shop, repo: ctx.repo, writer: ctx.writer, input });
++  let result: Awaited<ReturnType<typeof saveShopSettings>>;
++  try {
++    result = await saveShopSettings({ shop: ctx.shop, repo: ctx.repo, writer: ctx.writer, input });
++  } catch (error) {
++    // A failure here used to surface as the generic "Unexpected Server Error"
++    // page, which hides the cause in production. Log it, and keep the merchant on
++    // the form with their input.
++    console.error(
++      `[settings] could not save the settings for ${ctx.shopDomain}: ${
++        error instanceof Error ? (error.stack ?? error.message) : String(error)
++      }`,
++    );
++    return {
++      ok: false,
++      intent,
++      errors: [
++        { field: "form", message: "The settings could not be saved. Nothing was changed; please try again." },
++      ] as Array<{ field: string; message: string }>,
++      mirrored: false,
++      mirrorError: null as string | null,
++      policySummary: null,
++      checks: null,
++    };
++  }
+   return {
+     ok: result.errors.length === 0,
+     intent,
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes/app.welcome.tsx shopify-app-main/app/routes/app.welcome.tsx
+--- /tmp/orig/shopify-app-main/app/routes/app.welcome.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes/app.welcome.tsx	2026-11-04 07:13:53.628455430 +0000
+@@ -11,6 +11,7 @@
+ import { ChecklistDisclaimer, DeadlineBanner } from "~/components/ui";
+ import { runScan } from "~/services/scan.server";
+ import { enqueueJob } from "~/jobs/worker.server";
++import { installScanKey } from "~/services/install.server";
+ 
+ export async function loader({ request }: LoaderFunctionArgs) {
+   const ctx = await requireAppContext(request);
+@@ -28,7 +29,7 @@
+   if (ctx.mode === "demo") {
+     await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
+   } else {
+-    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, `install-scan:${ctx.shopDomain}`);
++    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
+   }
+   return redirect("/app");
+ }
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes/webhooks.tsx shopify-app-main/app/routes/webhooks.tsx
+--- /tmp/orig/shopify-app-main/app/routes/webhooks.tsx	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes/webhooks.tsx	2026-11-04 07:14:13.464597580 +0000
+@@ -60,6 +60,7 @@
+     topic,
+     shopDomain,
+     payload,
++    deliveryId,
+     deps: {
+       repo,
+       enqueue: async (job: WebhookJobRequest) => {
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/routes.ts shopify-app-main/app/routes.ts
+--- /tmp/orig/shopify-app-main/app/routes.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/routes.ts	2026-11-04 07:14:55.468664424 +0000
+@@ -8,6 +8,7 @@
+   route("webhooks", "routes/webhooks.tsx"),
+   route("exports/:kind", "routes/exports.$kind.tsx"),
+   route("api/jobs/nightly", "routes/api.jobs.nightly.tsx"),
++  route("api/jobs/tick", "routes/api.jobs.tick.tsx"),
+   route("healthz", "routes/healthz.tsx"),
+   route("preview/storefront", "routes/preview.storefront.tsx"),
+   route("app", "routes/app.tsx", [
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/services/billing.server.ts shopify-app-main/app/services/billing.server.ts
+--- /tmp/orig/shopify-app-main/app/services/billing.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/services/billing.server.ts	2026-11-04 07:16:11.149532670 +0000
+@@ -14,6 +14,26 @@
+ 
+ export const BILLING_PLAN_PREFIX = "legal_mrp";
+ 
++/**
++ * Whether the app asks Shopify for TEST charges.
++ *
++ * This used to be `NODE_ENV !== "production"`, but the Render image always runs
++ * with NODE_ENV=production, so a development store was sent real-charge requests
++ * that it cannot confirm. It is now its own switch:
++ *
++ *   BILLING_TEST_MODE=true   test charges (development stores, QA)
++ *   BILLING_TEST_MODE=false  real charges
++ *
++ * When it is unset the old behaviour applies (test outside production, real in
++ * production), so forgetting the variable can never make a live store free.
++ */
++export function isBillingTestMode(env: Record<string, string | undefined> = process.env): boolean {
++  const raw = env.BILLING_TEST_MODE?.trim().toLowerCase();
++  if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
++  if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
++  return env.NODE_ENV !== "production";
++}
++
+ export function billingPlanName(planId: PlanId, interval: Interval): string {
+   return `${BILLING_PLAN_PREFIX}_${planId}_${interval}`;
+ }
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/services/install.server.ts shopify-app-main/app/services/install.server.ts
+--- /tmp/orig/shopify-app-main/app/services/install.server.ts	1970-01-01 00:00:00.000000000 +0000
++++ shopify-app-main/app/services/install.server.ts	2026-11-04 07:13:47.958448462 +0000
+@@ -0,0 +1,76 @@
++/**
++ * Install bookkeeping for the post-auth hook.
++ *
++ * Uninstalling does not delete the shop row (only `shop/redact` does, 48 hours
++ * later): `markUninstalled` sets `isActive=false`, stamps `uninstalledAt` and
++ * deletes the sessions. A reinstall therefore finds an existing row, and the old
++ * hook only created a row when none existed. The shop stayed inactive, every job
++ * skipped it (`shopServices` returns null for an inactive shop), the dashboard
++ * kept the previous install's scan and the onboarding flag stayed set.
++ *
++ * Kept free of Shopify imports so it can be tested against the in-memory
++ * repository.
++ */
++import type { Repository } from "~/db/repository";
++import type { ShopRecord } from "~/db/types";
++
++export interface RegisterInstallResult {
++  shop: ShopRecord;
++  /** True when an uninstalled shop came back. */
++  reinstalled: boolean;
++  /** True when no row existed before. */
++  created: boolean;
++}
++
++/**
++ * The dedupe key for a shop's first scan. It carries the install time because a
++ * `QueuedJob` dedupe key is unique forever: a bare `install-scan:<shop>` key
++ * meant a reinstall's scan was silently dropped as a duplicate of the first
++ * install's.
++ */
++export function installScanKey(shop: Pick<ShopRecord, "shopDomain" | "installedAt">): string {
++  return `install-scan:${shop.shopDomain}:${shop.installedAt.getTime()}`;
++}
++
++export async function registerInstall(
++  repo: Repository,
++  shopDomain: string,
++  now: Date = new Date(),
++): Promise<RegisterInstallResult> {
++  const existing = await repo.getShop(shopDomain);
++  if (!existing) {
++    const shop = await repo.createShop(shopDomain, { plan: "free", planStatus: "NONE" });
++    return { shop, reinstalled: false, created: true };
++  }
++
++  // Nothing to repair for a shop that is active and was never uninstalled. The
++  // hook can run again for a live shop (a re-auth after a scope change), and that
++  // must not wipe its onboarding state or plan.
++  if (existing.isActive && !existing.uninstalledAt) {
++    return { shop: existing, reinstalled: false, created: false };
++  }
++
++  const shop = await repo.updateShop(existing.id, {
++    isActive: true,
++    uninstalledAt: null,
++    // Onboarding is shown again, and the welcome screen starts the first scan.
++    onboardingCompletedAt: null,
++    // Price tracking was not running while the app was uninstalled, so the
++    // tracking start (which R11 measures the 30-day window from) restarts here
++    // instead of claiming history for the gap.
++    installedAt: now,
++    // Shopify cancels the app subscription on uninstall; the stored plan would
++    // otherwise show the previous install's paid plan until the first billing sync.
++    plan: "free",
++    planStatus: "NONE",
++    billingInterval: null,
++    subscriptionId: null,
++    trialEndsAt: null,
++    // Forget the previous install's scan so the dashboard cannot show it as
++    // current. The rows themselves are replaced by the first scan.
++    lastScanStartedAt: null,
++    lastScanCompletedAt: null,
++    lastScanProductCount: 0,
++  });
++  return { shop, reinstalled: true, created: false };
++}
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/services/metafield-definitions.server.ts shopify-app-main/app/services/metafield-definitions.server.ts
+--- /tmp/orig/shopify-app-main/app/services/metafield-definitions.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/services/metafield-definitions.server.ts	2026-11-04 07:14:44.167569760 +0000
+@@ -1,7 +1,8 @@
+ /**
+  * Creates the `legal_in.*` metafield definitions (plus the JSON prior-price and
+  * shop-settings definitions) on install. Idempotent: a definition that already
+- * exists is left alone, so re-runs and reinstalls are safe.
++ * exists is not recreated, so re-runs and reinstalls are safe. An existing one
++ * is only touched to switch Storefront API access on when it is off.
+  *
+  * The key set follows the audit: manufacturer, packer, importer and seller are
+  * separate (L4); canonical country and label wording are separate (L5); the
+@@ -174,7 +175,16 @@
+ const LIST_DEFINITIONS = `#graphql
+   query LegalDefinitions($namespace: String!, $ownerType: MetafieldOwnerType!) {
+     metafieldDefinitions(first: 50, namespace: $namespace, ownerType: $ownerType) {
+-      edges { node { key namespace } }
++      edges { node { key namespace access { storefront } } }
++    }
++  }
++`;
++
++const UPDATE_DEFINITION = `#graphql
++  mutation UpdateMetafieldDefinition($definition: MetafieldDefinitionUpdateInput!) {
++    metafieldDefinitionUpdate(definition: $definition) {
++      updatedDefinition { id key namespace }
++      userErrors { field message code }
+     }
+   }
+ `;
+@@ -182,33 +192,69 @@
+ export interface DefinitionResult {
+   created: string[];
+   existing: string[];
++  /** Existing definitions whose Storefront API access was switched to PUBLIC_READ. */
++  updated: string[];
+   failed: Array<{ key: string; message: string }>;
+ }
+ 
+ type GraphQLFetch = (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
+ 
+-async function existingKeys(admin: { graphql: GraphQLFetch }, ownerType: "PRODUCT" | "SHOP"): Promise<Set<string>> {
++/** Existing definition keys, each with whether Storefront API access is already PUBLIC_READ. */
++async function existingDefinitions(
++  admin: { graphql: GraphQLFetch },
++  ownerType: "PRODUCT" | "SHOP",
++): Promise<Map<string, boolean>> {
+   const response = await admin.graphql(LIST_DEFINITIONS, {
+     variables: { namespace: LEGAL_NAMESPACE, ownerType },
+   });
+   const body = (await response.json()) as {
+-    data?: { metafieldDefinitions?: { edges?: Array<{ node: { key: string } }> } };
++    data?: {
++      metafieldDefinitions?: {
++        edges?: Array<{ node: { key: string; access?: { storefront?: string | null } | null } }>;
++      };
++    };
+   };
+   const edges = body.data?.metafieldDefinitions?.edges ?? [];
+-  return new Set(edges.map((edge) => edge.node.key));
++  return new Map(edges.map((edge) => [edge.node.key, edge.node.access?.storefront === "PUBLIC_READ"]));
+ }
+ 
+ /** Creates only the definitions that do not exist yet. Safe to call on every install. */
+ export async function ensureMetafieldDefinitions(admin: { graphql: GraphQLFetch }): Promise<DefinitionResult> {
+-  const result: DefinitionResult = { created: [], existing: [], failed: [] };
++  const result: DefinitionResult = { created: [], existing: [], updated: [], failed: [] };
+   const have = {
+-    PRODUCT: await existingKeys(admin, "PRODUCT"),
+-    SHOP: await existingKeys(admin, "SHOP"),
++    PRODUCT: await existingDefinitions(admin, "PRODUCT"),
++    SHOP: await existingDefinitions(admin, "SHOP"),
+   };
+ 
+   for (const spec of DEFINITION_SPECS) {
+-    if (have[spec.ownerType].has(spec.key)) {
++    const publicRead = have[spec.ownerType].get(spec.key);
++    if (publicRead !== undefined) {
+       result.existing.push(spec.key);
++      // PUBLIC_READ was only ever set when a definition was created, so a
++      // definition that already existed (created by an import, a script, or an
++      // earlier release) kept Storefront API access off, and a Search & Discovery
++      // filter on legal_in.country_of_origin could not read it.
++      if (!publicRead) {
++        const update = await admin.graphql(UPDATE_DEFINITION, {
++          variables: {
++            definition: {
++              namespace: LEGAL_NAMESPACE,
++              key: spec.key,
++              ownerType: spec.ownerType,
++              access: { storefront: "PUBLIC_READ" },
++            },
++          },
++        });
++        const updateBody = (await update.json()) as {
++          data?: { metafieldDefinitionUpdate?: { userErrors?: Array<{ message: string }> } };
++        };
++        const updateErrors = updateBody.data?.metafieldDefinitionUpdate?.userErrors ?? [];
++        if (updateErrors.length > 0) {
++          result.failed.push({ key: spec.key, message: updateErrors.map((e) => e.message).join("; ") });
++        } else {
++          result.updated.push(spec.key);
++        }
++      }
+       continue;
+     }
+     const response = await admin.graphql(CREATE_DEFINITION, {
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/services/webhooks.server.ts shopify-app-main/app/services/webhooks.server.ts
+--- /tmp/orig/shopify-app-main/app/services/webhooks.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/services/webhooks.server.ts	2026-11-04 07:14:13.464276197 +0000
+@@ -119,8 +119,10 @@
+   shopDomain: string;
+   payload: Record<string, unknown>;
+   deps: WebhookDeps;
++  /** `X-Shopify-Event-Id` of this delivery, when the caller has it. */
++  deliveryId?: string | null;
+ }): Promise<WebhookResult> {
+-  const { topic, shopDomain, payload, deps } = options;
++  const { topic, shopDomain, payload, deps, deliveryId } = options;
+   const now = deps.now ?? new Date();
+ 
+   switch (topic) {
+@@ -139,8 +141,27 @@
+       // the coalesced publish of this product's prior price. Queue priority
+       // (app/jobs/queue.server.ts) keeps that order even when all three become
+       // due at the same moment.
+-      await deps.enqueue({ name: "price-snapshot", shopDomain, productId: gid });
+-      await deps.enqueue({ name: "rescan-product", shopDomain, productId: gid });
++      //
++      // The two per-product jobs are keyed by the delivery, not by the product.
++      // A `QueuedJob` dedupe key is unique for the life of the row, and finished
++      // rows are kept, so the old per-product key (`rescan-product:<shop>:<gid>`)
++      // let the first update of a product through and silently dropped every later
++      // one: edit a product twice and only the first edit was ever re-scanned.
++      // A redelivery of the same event still collapses, because it has the same
++      // event id (or, without one, the same payload and so the same digest).
++      const eventKey = webhookDedupeKey(topic, shopDomain, payload, deliveryId);
++      await deps.enqueue({
++        name: "price-snapshot",
++        shopDomain,
++        productId: gid,
++        key: `price-snapshot:${eventKey}:${gid}`,
++      });
++      await deps.enqueue({
++        name: "rescan-product",
++        shopDomain,
++        productId: gid,
++        key: `rescan-product:${eventKey}:${gid}`,
++      });
+       await deps.enqueue({
+         name: "publish-prior-prices",
+         shopDomain,
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/app/shopify.server.ts shopify-app-main/app/shopify.server.ts
+--- /tmp/orig/shopify-app-main/app/shopify.server.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/app/shopify.server.ts	2026-11-04 07:13:48.010391464 +0000
+@@ -9,6 +9,7 @@
+ import type { SessionStorage } from "@shopify/shopify-app-session-storage";
+ import { buildBillingConfig } from "~/services/billing.server";
+ import { ensureMetafieldDefinitions } from "~/services/metafield-definitions.server";
++import { installScanKey, registerInstall } from "~/services/install.server";
+ 
+ export const APP_SCOPES = ["read_products", "write_products"];
+ 
+@@ -126,10 +127,9 @@
+         import("~/jobs/worker.server"),
+       ]);
+       const repo = new PrismaRepository(prisma);
+-      const existing = await repo.getShop(session.shop);
+-      if (!existing) {
+-        await repo.createShop(session.shop, { plan: "free", planStatus: "NONE" });
+-      }
++      // Creates the shop, or brings an uninstalled one back (isActive, onboarding,
++      // plan and scan state). See services/install.server.ts.
++      const { shop } = await registerInstall(repo, session.shop);
+ 
+       try {
+         await ensureMetafieldDefinitions(admin);
+@@ -144,7 +144,7 @@
+       // F1: the first scan starts automatically, off the request path. The job
+       // is persisted before this hook returns, so a crash straight after install
+       // still leaves the scan queued rather than silently dropped.
+-      await enqueueJob("nightly-scan", { shopDomain: session.shop }, `install-scan:${session.shop}`);
++      await enqueueJob("nightly-scan", { shopDomain: session.shop }, installScanKey(shop));
+     },
+   },
+ });
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/render.yaml shopify-app-main/render.yaml
+--- /tmp/orig/shopify-app-main/render.yaml	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/render.yaml	2026-11-04 07:15:08.257437133 +0000
+@@ -33,3 +33,8 @@
+         generateValue: true
+       - key: DEMO_MODE
+         value: "0"
++      # "true" = Shopify TEST charges (the development store, QA); "false" = real
++      # charges. Asked for explicitly so a live store cannot be left in test mode
++      # by a default. Set "false" before the app is installable by merchants.
++      - key: BILLING_TEST_MODE
++        sync: false
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/tests/billing-test-mode.test.ts shopify-app-main/tests/billing-test-mode.test.ts
+--- /tmp/orig/shopify-app-main/tests/billing-test-mode.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ shopify-app-main/tests/billing-test-mode.test.ts	2026-11-04 07:15:35.179083813 +0000
+@@ -0,0 +1,21 @@
++import { describe, expect, it } from "vitest";
++import { isBillingTestMode } from "~/services/billing.server";
++
++describe("isBillingTestMode", () => {
++  it("is driven by BILLING_TEST_MODE, not NODE_ENV", () => {
++    expect(isBillingTestMode({ NODE_ENV: "production", BILLING_TEST_MODE: "true" })).toBe(true);
++    expect(isBillingTestMode({ NODE_ENV: "production", BILLING_TEST_MODE: "1" })).toBe(true);
++    expect(isBillingTestMode({ NODE_ENV: "development", BILLING_TEST_MODE: "false" })).toBe(false);
++    expect(isBillingTestMode({ NODE_ENV: "development", BILLING_TEST_MODE: " OFF " })).toBe(false);
++  });
++
++  it("falls back to the old rule when it is unset, so production can never default to test charges", () => {
++    expect(isBillingTestMode({ NODE_ENV: "production" })).toBe(false);
++    expect(isBillingTestMode({ NODE_ENV: "development" })).toBe(true);
++    expect(isBillingTestMode({})).toBe(true);
++  });
++
++  it("ignores an unrecognised value", () => {
++    expect(isBillingTestMode({ NODE_ENV: "production", BILLING_TEST_MODE: "maybe" })).toBe(false);
++  });
++});
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/tests/install.test.ts shopify-app-main/tests/install.test.ts
+--- /tmp/orig/shopify-app-main/tests/install.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ shopify-app-main/tests/install.test.ts	2026-11-04 07:15:35.178133692 +0000
+@@ -0,0 +1,73 @@
++/**
++ * A reinstall must bring the shop back to life. `markUninstalled` leaves the row
++ * in place, and the post-auth hook used to create a row only when none existed,
++ * so the shop stayed inactive, every job skipped it, the dashboard kept the old
++ * scan and the welcome screen never came back.
++ */
++import { describe, expect, it } from "vitest";
++import { MemoryRepository } from "~/db/memory.server";
++import { installScanKey, registerInstall } from "~/services/install.server";
++import { makeShop } from "./helpers";
++
++const DOMAIN = "demo.myshopify.com";
++
++describe("registerInstall", () => {
++  it("creates the shop on a first install", async () => {
++    const repo = new MemoryRepository();
++    const result = await registerInstall(repo, DOMAIN, new Date("2026-11-03T10:00:00.000Z"));
++    expect(result.created).toBe(true);
++    expect(result.reinstalled).toBe(false);
++    expect(result.shop.isActive).toBe(true);
++    expect(result.shop.onboardingCompletedAt).toBeNull();
++  });
++
++  it("reactivates an uninstalled shop and resets onboarding, plan and scan state", async () => {
++    const repo = new MemoryRepository();
++    await repo.createShop(
++      DOMAIN,
++      makeShop({
++        plan: "standard",
++        planStatus: "ACTIVE",
++        billingInterval: "monthly",
++        subscriptionId: "gid://shopify/AppSubscription/1",
++        lastScanProductCount: 371,
++        lastScanCompletedAt: new Date("2026-11-03T08:00:00.000Z"),
++      }),
++    );
++    await repo.markUninstalled(DOMAIN);
++    expect((await repo.getShop(DOMAIN))?.isActive).toBe(false);
++
++    const now = new Date("2026-11-04T07:00:00.000Z");
++    const result = await registerInstall(repo, DOMAIN, now);
++
++    expect(result.reinstalled).toBe(true);
++    expect(result.shop.isActive).toBe(true);
++    expect(result.shop.uninstalledAt).toBeNull();
++    expect(result.shop.onboardingCompletedAt).toBeNull();
++    expect(result.shop.installedAt).toEqual(now);
++    expect(result.shop.plan).toBe("free");
++    expect(result.shop.planStatus).toBe("NONE");
++    expect(result.shop.subscriptionId).toBeNull();
++    expect(result.shop.lastScanProductCount).toBe(0);
++    expect(result.shop.lastScanCompletedAt).toBeNull();
++    // The merchant's settings survive an uninstall.
++    expect(result.shop.grievanceName).toBe("Priya Menon");
++  });
++
++  it("leaves a live shop alone when the hook runs again", async () => {
++    const repo = new MemoryRepository();
++    const created = await repo.createShop(DOMAIN, makeShop());
++    const result = await registerInstall(repo, DOMAIN, new Date("2026-11-04T07:00:00.000Z"));
++    expect(result.reinstalled).toBe(false);
++    expect(result.shop.onboardingCompletedAt).toEqual(created.onboardingCompletedAt);
++    expect(result.shop.plan).toBe("pro");
++  });
++
++  it("gives a reinstall a different first-scan key from the install before it", async () => {
++    const repo = new MemoryRepository();
++    const first = await registerInstall(repo, DOMAIN, new Date("2026-11-03T10:00:00.000Z"));
++    await repo.markUninstalled(DOMAIN);
++    const second = await registerInstall(repo, DOMAIN, new Date("2026-11-04T07:00:00.000Z"));
++    expect(installScanKey(second.shop)).not.toBe(installScanKey(first.shop));
++  });
++});
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/tests/metafield-definitions.test.ts shopify-app-main/tests/metafield-definitions.test.ts
+--- /tmp/orig/shopify-app-main/tests/metafield-definitions.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ shopify-app-main/tests/metafield-definitions.test.ts	2026-11-04 07:15:35.180010664 +0000
+@@ -0,0 +1,64 @@
++/**
++ * PUBLIC_READ used to be set only when a definition was created, so a definition
++ * that already existed kept Storefront API access off. That is what left
++ * legal_in.country_of_origin unreadable for a Search & Discovery filter.
++ */
++import { describe, expect, it } from "vitest";
++import { DEFINITION_SPECS, ensureMetafieldDefinitions } from "~/services/metafield-definitions.server";
++
++type Call = { query: string; variables: Record<string, unknown> };
++
++function fakeAdmin(existing: Record<string, "PUBLIC_READ" | "NONE">, shopExisting: Record<string, "PUBLIC_READ" | "NONE"> = {}) {
++  const calls: Call[] = [];
++  const respond = (data: unknown) => ({ json: async () => data }) as unknown as Response;
++  return {
++    calls,
++    graphql: async (query: string, options?: { variables?: Record<string, unknown> }) => {
++      const variables = options?.variables ?? {};
++      calls.push({ query, variables });
++      if (query.includes("LegalDefinitions")) {
++        const source = variables.ownerType === "SHOP" ? shopExisting : existing;
++        return respond({
++          data: {
++            metafieldDefinitions: {
++              edges: Object.entries(source).map(([key, storefront]) => ({
++                node: { key, namespace: "legal_in", access: { storefront } },
++              })),
++            },
++          },
++        });
++      }
++      if (query.includes("UpdateMetafieldDefinition")) {
++        return respond({ data: { metafieldDefinitionUpdate: { userErrors: [] } } });
++      }
++      return respond({ data: { metafieldDefinitionCreate: { userErrors: [] } } });
++    },
++  };
++}
++
++describe("ensureMetafieldDefinitions", () => {
++  it("switches Storefront API access on for an existing definition that has it off", async () => {
++    const admin = fakeAdmin({ country_of_origin: "NONE", mrp: "PUBLIC_READ" });
++    const result = await ensureMetafieldDefinitions(admin);
++
++    expect(result.updated).toEqual(["country_of_origin"]);
++    const updates = admin.calls.filter((call) => call.query.includes("UpdateMetafieldDefinition"));
++    expect(updates).toHaveLength(1);
++    expect(updates[0]!.variables.definition).toEqual({
++      namespace: "legal_in",
++      key: "country_of_origin",
++      ownerType: "PRODUCT",
++      access: { storefront: "PUBLIC_READ" },
++    });
++  });
++
++  it("does not touch a definition that is already public, and still creates the missing ones", async () => {
++    const admin = fakeAdmin({ mrp: "PUBLIC_READ" });
++    const result = await ensureMetafieldDefinitions(admin);
++
++    expect(result.updated).toEqual([]);
++    expect(result.existing).toEqual(["mrp"]);
++    expect(result.created).toHaveLength(DEFINITION_SPECS.length - 1);
++    expect(admin.calls.some((call) => call.query.includes("UpdateMetafieldDefinition"))).toBe(false);
++  });
++});
+diff -ruN '--exclude=node_modules' /tmp/orig/shopify-app-main/tests/webhook-pipeline.test.ts shopify-app-main/tests/webhook-pipeline.test.ts
+--- /tmp/orig/shopify-app-main/tests/webhook-pipeline.test.ts	2026-11-03 19:21:25.000000000 +0000
++++ shopify-app-main/tests/webhook-pipeline.test.ts	2026-11-04 07:15:35.191891363 +0000
+@@ -118,6 +118,41 @@
+     expect(claimedNames.filter((name) => name === "rescan-product")).toHaveLength(20);
+   });
+ 
++  it("queues a later update of the same product again, even after the first was processed", async () => {
++    const repo = new MemoryRepository();
++    shop = await repo.createShop("demo.myshopify.com", makeShop());
++    const { queue, seen } = await deliveryQueue(repo);
++    const deliverEvent = async (eventId: string) => {
++      await handleWebhook({
++        topic: "products/update",
++        shopDomain: shop.shopDomain,
++        payload: { admin_graphql_api_id: "gid://shopify/Product/7" },
++        deliveryId: eventId,
++        deps: {
++          repo,
++          now: new Date("2026-12-01T00:00:00.000Z"),
++          enqueue: async (job: WebhookJobRequest) => {
++            const payload = job.productIds
++              ? { shopDomain: job.shopDomain, productIds: job.productIds }
++              : { shopDomain: job.shopDomain, productId: job.productId ?? null };
++            await queue.enqueue(job.name, payload, job.key);
++          },
++        },
++      });
++    };
++
++    await deliverEvent("evt-1");
++    await queue.drainOnce();
++    await deliverEvent("evt-2");
++    await queue.drainOnce();
++    // The same event delivered again is still a no-op.
++    await deliverEvent("evt-2");
++    await queue.drainOnce();
++
++    expect(seen.filter((job) => job.name === "rescan-product")).toHaveLength(2);
++    expect(seen.filter((job) => job.name === "price-snapshot")).toHaveLength(2);
++  });
++
+   it("keeps a re-delivered update idempotent", async () => {
+     const repo = new MemoryRepository();
+     shop = await repo.createShop("demo.myshopify.com", makeShop());

@@ -11,6 +11,7 @@ import { APP_NAME, PRICE_HISTORY_INSTALL_BY, formatShortDate } from "~/domain/co
 import { ChecklistDisclaimer, DeadlineBanner } from "~/components/ui";
 import { runScan } from "~/services/scan.server";
 import { enqueueJob } from "~/jobs/worker.server";
+import { installScanKey } from "~/services/install.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const ctx = await requireAppContext(request);
@@ -28,7 +29,7 @@ export async function action({ request }: ActionFunctionArgs) {
   if (ctx.mode === "demo") {
     await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
   } else {
-    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, `install-scan:${ctx.shopDomain}`);
+    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
   }
   return redirect("/app");
 }

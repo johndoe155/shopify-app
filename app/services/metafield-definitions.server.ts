@@ -1,7 +1,8 @@
 /**
  * Creates the `legal_in.*` metafield definitions (plus the JSON prior-price and
  * shop-settings definitions) on install. Idempotent: a definition that already
- * exists is left alone, so re-runs and reinstalls are safe.
+ * exists is not recreated, so re-runs and reinstalls are safe. An existing one
+ * is only touched to switch Storefront API access on when it is off.
  *
  * The key set follows the audit: manufacturer, packer, importer and seller are
  * separate (L4); canonical country and label wording are separate (L5); the
@@ -174,7 +175,16 @@ const CREATE_DEFINITION = `#graphql
 const LIST_DEFINITIONS = `#graphql
   query LegalDefinitions($namespace: String!, $ownerType: MetafieldOwnerType!) {
     metafieldDefinitions(first: 50, namespace: $namespace, ownerType: $ownerType) {
-      edges { node { key namespace } }
+      edges { node { key namespace access { storefront } } }
+    }
+  }
+`;
+
+const UPDATE_DEFINITION = `#graphql
+  mutation UpdateMetafieldDefinition($definition: MetafieldDefinitionUpdateInput!) {
+    metafieldDefinitionUpdate(definition: $definition) {
+      updatedDefinition { id key namespace }
+      userErrors { field message code }
     }
   }
 `;
@@ -182,33 +192,69 @@ const LIST_DEFINITIONS = `#graphql
 export interface DefinitionResult {
   created: string[];
   existing: string[];
+  /** Existing definitions whose Storefront API access was switched to PUBLIC_READ. */
+  updated: string[];
   failed: Array<{ key: string; message: string }>;
 }
 
 type GraphQLFetch = (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
 
-async function existingKeys(admin: { graphql: GraphQLFetch }, ownerType: "PRODUCT" | "SHOP"): Promise<Set<string>> {
+/** Existing definition keys, each with whether Storefront API access is already PUBLIC_READ. */
+async function existingDefinitions(
+  admin: { graphql: GraphQLFetch },
+  ownerType: "PRODUCT" | "SHOP",
+): Promise<Map<string, boolean>> {
   const response = await admin.graphql(LIST_DEFINITIONS, {
     variables: { namespace: LEGAL_NAMESPACE, ownerType },
   });
   const body = (await response.json()) as {
-    data?: { metafieldDefinitions?: { edges?: Array<{ node: { key: string } }> } };
+    data?: {
+      metafieldDefinitions?: {
+        edges?: Array<{ node: { key: string; access?: { storefront?: string | null } | null } }>;
+      };
+    };
   };
   const edges = body.data?.metafieldDefinitions?.edges ?? [];
-  return new Set(edges.map((edge) => edge.node.key));
+  return new Map(edges.map((edge) => [edge.node.key, edge.node.access?.storefront === "PUBLIC_READ"]));
 }
 
 /** Creates only the definitions that do not exist yet. Safe to call on every install. */
 export async function ensureMetafieldDefinitions(admin: { graphql: GraphQLFetch }): Promise<DefinitionResult> {
-  const result: DefinitionResult = { created: [], existing: [], failed: [] };
+  const result: DefinitionResult = { created: [], existing: [], updated: [], failed: [] };
   const have = {
-    PRODUCT: await existingKeys(admin, "PRODUCT"),
-    SHOP: await existingKeys(admin, "SHOP"),
+    PRODUCT: await existingDefinitions(admin, "PRODUCT"),
+    SHOP: await existingDefinitions(admin, "SHOP"),
   };
 
   for (const spec of DEFINITION_SPECS) {
-    if (have[spec.ownerType].has(spec.key)) {
+    const publicRead = have[spec.ownerType].get(spec.key);
+    if (publicRead !== undefined) {
       result.existing.push(spec.key);
+      // PUBLIC_READ was only ever set when a definition was created, so a
+      // definition that already existed (created by an import, a script, or an
+      // earlier release) kept Storefront API access off, and a Search & Discovery
+      // filter on legal_in.country_of_origin could not read it.
+      if (!publicRead) {
+        const update = await admin.graphql(UPDATE_DEFINITION, {
+          variables: {
+            definition: {
+              namespace: LEGAL_NAMESPACE,
+              key: spec.key,
+              ownerType: spec.ownerType,
+              access: { storefront: "PUBLIC_READ" },
+            },
+          },
+        });
+        const updateBody = (await update.json()) as {
+          data?: { metafieldDefinitionUpdate?: { userErrors?: Array<{ message: string }> } };
+        };
+        const updateErrors = updateBody.data?.metafieldDefinitionUpdate?.userErrors ?? [];
+        if (updateErrors.length > 0) {
+          result.failed.push({ key: spec.key, message: updateErrors.map((e) => e.message).join("; ") });
+        } else {
+          result.updated.push(spec.key);
+        }
+      }
       continue;
     }
     const response = await admin.graphql(CREATE_DEFINITION, {

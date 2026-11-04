@@ -60,6 +60,7 @@ export async function action({ request }: ActionFunctionArgs) {
     topic,
     shopDomain,
     payload,
+    deliveryId,
     deps: {
       repo,
       enqueue: async (job: WebhookJobRequest) => {

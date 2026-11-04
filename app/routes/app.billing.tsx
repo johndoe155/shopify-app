@@ -8,7 +8,12 @@ import { Form, useActionData, useLoaderData } from "react-router";
 import { Badge, Banner, BlockStack, Box, Button, Card, InlineStack, Layout, Page, Text } from "@shopify/polaris";
 import { invalidateBillingSync, requireAppContext } from "~/context.server";
 import { PLANS, getPlan, usageFor, type BillingInterval, type PlanId } from "~/domain/plans";
-import { billingPlanName, markSubscriptionCancelled, planDisplay } from "~/services/billing.server";
+import {
+  billingPlanName,
+  isBillingTestMode,
+  markSubscriptionCancelled,
+  planDisplay,
+} from "~/services/billing.server";
 import { ChecklistDisclaimer } from "~/components/ui";
 import { formatShortDate } from "~/domain/copy";
 
@@ -83,11 +88,32 @@ export async function action({ request }: ActionFunctionArgs) {
 
     // Shopify shows its charge confirmation screen. The plan changes only after
     // the merchant confirms the charge, so there is no auto-upgrade anywhere.
-    await ctx.billing.request({
-      plan: billingPlanName(planId, interval),
-      isTest: process.env.NODE_ENV !== "production",
-      returnUrl: `${new URL(request.url).origin}/app/billing`,
-    });
+    try {
+      await ctx.billing.request({
+        plan: billingPlanName(planId, interval),
+        isTest: isBillingTestMode(),
+        returnUrl: `${new URL(request.url).origin}/app/billing`,
+      });
+    } catch (error) {
+      // On success the SDK *throws* a Response (the redirect to Shopify's charge
+      // confirmation page), and that has to keep propagating. Anything else is a failed charge
+      // request: show it instead of the generic "Unexpected Server Error" page,
+      // and log the cause, which production error pages hide.
+      if (error instanceof Response) throw error;
+      console.error(
+        `[billing] could not create the ${planId}/${interval} charge for ${ctx.shopDomain}: ${
+          error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+        }`,
+      );
+      return Response.json(
+        {
+          ok: false,
+          message:
+            "Shopify did not create the charge, so nothing was changed and you have not been billed. Please try again in a moment.",
+        },
+        { status: 502 },
+      );
+    }
     return Response.json({ ok: true });
   }
 

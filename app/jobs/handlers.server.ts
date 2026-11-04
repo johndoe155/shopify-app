@@ -25,6 +25,7 @@ import { runProductRescan, runScan } from "~/services/scan.server";
 import { publishPriorPrices, recordPriceSnapshots } from "~/services/price-history.server";
 import { detectStorefrontBlocks } from "~/services/blocks.server";
 import { checkPolicyLinks } from "~/services/policy-links.server";
+import { ensureMetafieldDefinitions } from "~/services/metafield-definitions.server";
 import { registerHandler, type Job } from "./queue.server";
 
 let registered = false;
@@ -32,6 +33,7 @@ let registered = false;
 export interface ShopServices {
   shop: ShopRecord;
   repo: Repository;
+  admin: Awaited<ReturnType<typeof shopify.unauthenticated.admin>>["admin"];
   catalog: ShopifyCatalogSource;
   writer: ShopifyMetafieldWriter;
 }
@@ -46,6 +48,7 @@ export async function shopServices(shopDomain: string): Promise<ShopServices | n
   return {
     shop,
     repo,
+    admin,
     catalog: new ShopifyCatalogSource(admin),
     writer: new ShopifyMetafieldWriter(admin),
   };
@@ -66,17 +69,38 @@ function isoDate(date: Date): string {
  * The catalogue is read once and passed to each step: one bulk operation for the
  * whole nightly job, which is what keeps it from colliding with the webhook path.
  */
-export async function runNightlyForShop(shopDomain: string, now: Date = new Date()): Promise<{
+export async function runNightlyForShop(
+  shopDomain: string,
+  now: Date = new Date(),
+  options: { runKey?: string } = {},
+): Promise<{
   ran: boolean;
   reason?: string;
 }> {
   const services = await shopServices(shopDomain);
   if (!services) return { ran: false, reason: "shop not installed or inactive" };
-  const { shop, repo, catalog, writer } = services;
+  const { shop, repo, catalog, writer, admin } = services;
 
-  const key = `nightly:${shopDomain}:${isoDate(now)}`;
+  // The scheduled run is idempotent per shop per day. A run somebody asked for
+  // (the install scan, the welcome screen, the dashboard's Rescan button) passes
+  // its own key: with the shared daily key, every such scan after the first one
+  // of the day returned "already ran today" and the dashboard never refreshed.
+  const key = options.runKey ?? `nightly:${shopDomain}:${isoDate(now)}`;
   const claimed = await repo.claimJobRun(key, "nightly-scan", shop.id);
   if (!claimed) return { ran: false, reason: "already ran today" };
+
+  // Definitions that already exist are not touched by the install hook, so a
+  // shop whose definitions were created without Storefront access (or before
+  // that was set) is corrected on its next scan, not only on a reinstall.
+  try {
+    await ensureMetafieldDefinitions(admin);
+  } catch (error) {
+    console.warn(
+      `[nightly] ${shopDomain}: could not verify the metafield definitions (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
 
   try {
     const products = await catalog.fetchProducts({ force: true });
@@ -241,7 +265,10 @@ async function handleNightly(job: Job): Promise<void> {
     await runNightlyForAllShops();
     return;
   }
-  await runNightlyForShop(shopDomain);
+  // Every queued scan carries its own key (install-scan:*, manual-scan:*), which
+  // the queue has already made unique, so it also names this run. The suffix
+  // keeps a retry of the same job from being mistaken for a finished run.
+  await runNightlyForShop(shopDomain, new Date(), { runKey: `${job.key}:run:${Date.now()}` });
 }
 
 /** Idempotent: safe to call on every request that might need the handlers. */

@@ -119,8 +119,10 @@ export async function handleWebhook(options: {
   shopDomain: string;
   payload: Record<string, unknown>;
   deps: WebhookDeps;
+  /** `X-Shopify-Event-Id` of this delivery, when the caller has it. */
+  deliveryId?: string | null;
 }): Promise<WebhookResult> {
-  const { topic, shopDomain, payload, deps } = options;
+  const { topic, shopDomain, payload, deps, deliveryId } = options;
   const now = deps.now ?? new Date();
 
   switch (topic) {
@@ -139,8 +141,27 @@ export async function handleWebhook(options: {
       // the coalesced publish of this product's prior price. Queue priority
       // (app/jobs/queue.server.ts) keeps that order even when all three become
       // due at the same moment.
-      await deps.enqueue({ name: "price-snapshot", shopDomain, productId: gid });
-      await deps.enqueue({ name: "rescan-product", shopDomain, productId: gid });
+      //
+      // The two per-product jobs are keyed by the delivery, not by the product.
+      // A `QueuedJob` dedupe key is unique for the life of the row, and finished
+      // rows are kept, so the old per-product key (`rescan-product:<shop>:<gid>`)
+      // let the first update of a product through and silently dropped every later
+      // one: edit a product twice and only the first edit was ever re-scanned.
+      // A redelivery of the same event still collapses, because it has the same
+      // event id (or, without one, the same payload and so the same digest).
+      const eventKey = webhookDedupeKey(topic, shopDomain, payload, deliveryId);
+      await deps.enqueue({
+        name: "price-snapshot",
+        shopDomain,
+        productId: gid,
+        key: `price-snapshot:${eventKey}:${gid}`,
+      });
+      await deps.enqueue({
+        name: "rescan-product",
+        shopDomain,
+        productId: gid,
+        key: `rescan-product:${eventKey}:${gid}`,
+      });
       await deps.enqueue({
         name: "publish-prior-prices",
         shopDomain,

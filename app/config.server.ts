@@ -148,6 +148,14 @@ export function assertRuntimeConfig(env: NodeJS.ProcessEnv = process.env): void 
     if (gaps.length > 0) {
       console.warn(`[config] optional values not set: ${gaps.join("; ")}`);
     }
+    if (config.environment === "production" && /^(true|1|yes|on)$/i.test(env.BILLING_TEST_MODE?.trim() ?? "")) {
+      // Not an error: a development store needs it. It is loud because a live
+      // store left in test mode is never billed.
+      console.warn(
+        "[config] BILLING_TEST_MODE is on: every plan charge is a Shopify TEST charge. " +
+          "Set BILLING_TEST_MODE=false before real merchants can install.",
+      );
+    }
     return;
   }
   if (config.environment !== "production") {
