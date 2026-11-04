@@ -10,6 +10,7 @@ import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 export const links: LinksFunction = () => [{ rel: "stylesheet", href: polarisStyles }];
 
 export async function loader({ request }: LoaderFunctionArgs) {
+  console.log("[req]", new URL(request.url).pathname, JSON.stringify(request.headers.get("user-agent")));
   // Fails fast in production when a required variable is missing or still a
   // placeholder, instead of serving a half-configured app. Warns elsewhere.
   assertRuntimeConfig();
