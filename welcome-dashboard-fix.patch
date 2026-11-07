@@ -1,0 +1,73 @@
+--- a/app/routes/app.welcome.tsx	2026-11-04 07:28:28.000000000 +0000
++++ b/app/routes/app.welcome.tsx	2026-11-07 21:42:50.632647384 +0000
+@@ -15,7 +15,9 @@
+ 
+ export async function loader({ request }: LoaderFunctionArgs) {
+   const ctx = await requireAppContext(request);
+-  if (ctx.shop.onboardingCompletedAt) return redirect("/app");
++  // Keep the query string: it carries the embedded-app parameters (shop, host,
++  // embedded, id_token). A bare "/app" cannot be authenticated on a full page load.
++  if (ctx.shop.onboardingCompletedAt) return redirect(`/app${new URL(request.url).search}`);
+   return {
+     demo: ctx.mode === "demo",
+     installedAt: ctx.shop.installedAt.toISOString(),
+@@ -25,13 +27,26 @@
+ 
+ export async function action({ request }: ActionFunctionArgs) {
+   const ctx = await requireAppContext(request);
++  const search = new URL(request.url).search;
+   await ctx.repo.updateShop(ctx.shop.id, { onboardingCompletedAt: new Date() });
+-  if (ctx.mode === "demo") {
+-    await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
+-  } else {
+-    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
++  // Starting the scan must never lock the merchant out of the dashboard. If the
++  // scan cannot be started or queued, log the real error (React Router masks it in
++  // production as "Unexpected Server Error") and carry on; the dashboard has a
++  // "Rescan catalogue" button and the nightly job also scans.
++  try {
++    if (ctx.mode === "demo") {
++      await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
++    } else {
++      await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
++    }
++  } catch (error) {
++    console.error(
++      `[welcome] could not start the first scan for ${ctx.shopDomain}: ${
++        error instanceof Error ? (error.stack ?? error.message) : String(error)
++      }`,
++    );
+   }
+-  return redirect("/app");
++  return redirect(`/app${search}`);
+ }
+ 
+ export default function Welcome() {
+--- a/app/root.tsx	2026-11-04 07:28:28.000000000 +0000
++++ b/app/root.tsx	2026-11-07 21:42:50.632876929 +0000
+@@ -1,5 +1,5 @@
+ import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
+-import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, isRouteErrorResponse, useRouteError } from "react-router";
++import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, useLocation, isRouteErrorResponse, useRouteError } from "react-router";
+ import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
+ import en from "@shopify/polaris/locales/en.json";
+ import { boundary } from "@shopify/shopify-app-react-router/server";
+@@ -91,6 +91,9 @@
+ 
+ export function ErrorBoundary() {
+   const error = useRouteError();
++  // Keep the embedded-app parameters (shop, host, embedded, id_token) on the way
++  // back: a bare "/app" has no shop, so a full page load cannot authenticate.
++  const { search } = useLocation();
+   if (isRouteErrorResponse(error) && looksLikeMarkup(error.data)) {
+     return boundary.error(error);
+   }
+@@ -110,7 +113,7 @@
+         <h1 style={{ fontSize: 20, fontWeight: 650 }}>{title}</h1>
+         <p style={{ color: "#6d7175", maxWidth: 560 }}>{message}</p>
+         <p>
+-          <a href="/app">Back to the dashboard</a>
++          <a href={`/app${search}`}>Back to the dashboard</a>
+         </p>
+       </div>
+     </PolarisAppProvider>

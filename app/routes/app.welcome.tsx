@@ -15,7 +15,9 @@ import { installScanKey } from "~/services/install.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const ctx = await requireAppContext(request);
-  if (ctx.shop.onboardingCompletedAt) return redirect("/app");
+  // Keep the query string: it carries the embedded-app parameters (shop, host,
+  // embedded, id_token). A bare "/app" cannot be authenticated on a full page load.
+  if (ctx.shop.onboardingCompletedAt) return redirect(`/app${new URL(request.url).search}`);
   return {
     demo: ctx.mode === "demo",
     installedAt: ctx.shop.installedAt.toISOString(),
@@ -25,13 +27,26 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   const ctx = await requireAppContext(request);
+  const search = new URL(request.url).search;
   await ctx.repo.updateShop(ctx.shop.id, { onboardingCompletedAt: new Date() });
-  if (ctx.mode === "demo") {
-    await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
-  } else {
-    await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
+  // Starting the scan must never lock the merchant out of the dashboard. If the
+  // scan cannot be started or queued, log the real error (React Router masks it in
+  // production as "Unexpected Server Error") and carry on; the dashboard has a
+  // "Rescan catalogue" button and the nightly job also scans.
+  try {
+    if (ctx.mode === "demo") {
+      await runScan({ shop: ctx.shop, repo: ctx.repo, catalog: ctx.catalog });
+    } else {
+      await enqueueJob("nightly-scan", { shopDomain: ctx.shopDomain }, installScanKey(ctx.shop));
+    }
+  } catch (error) {
+    console.error(
+      `[welcome] could not start the first scan for ${ctx.shopDomain}: ${
+        error instanceof Error ? (error.stack ?? error.message) : String(error)
+      }`,
+    );
   }
-  return redirect("/app");
+  return redirect(`/app${search}`);
 }
 
 export default function Welcome() {

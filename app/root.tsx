@@ -1,5 +1,5 @@
 import type { HeadersFunction, LinksFunction, LoaderFunctionArgs } from "react-router";
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, isRouteErrorResponse, useRouteError } from "react-router";
+import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLoaderData, useLocation, isRouteErrorResponse, useRouteError } from "react-router";
 import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
 import en from "@shopify/polaris/locales/en.json";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -91,6 +91,9 @@ function looksLikeMarkup(data: unknown): data is string {
 
 export function ErrorBoundary() {
   const error = useRouteError();
+  // Keep the embedded-app parameters (shop, host, embedded, id_token) on the way
+  // back: a bare "/app" has no shop, so a full page load cannot authenticate.
+  const { search } = useLocation();
   if (isRouteErrorResponse(error) && looksLikeMarkup(error.data)) {
     return boundary.error(error);
   }
@@ -110,7 +113,7 @@ export function ErrorBoundary() {
         <h1 style={{ fontSize: 20, fontWeight: 650 }}>{title}</h1>
         <p style={{ color: "#6d7175", maxWidth: 560 }}>{message}</p>
         <p>
-          <a href="/app">Back to the dashboard</a>
+          <a href={`/app${search}`}>Back to the dashboard</a>
         </p>
       </div>
     </PolarisAppProvider>
