@@ -92,7 +92,7 @@ export async function action({ request }: ActionFunctionArgs) {
       await ctx.billing.request({
         plan: billingPlanName(planId, interval),
         isTest: isBillingTestMode(),
-        returnUrl: `${new URL(request.url).origin}/app/billing`,
+        returnUrl: `${(process.env.SHOPIFY_APP_URL || new URL(request.url).origin).replace(/\/+$/, "")}/app/billing`,
       });
     } catch (error) {
       // On success the SDK *throws* a Response (the redirect to Shopify's charge
@@ -105,6 +105,10 @@ export async function action({ request }: ActionFunctionArgs) {
           error instanceof Error ? `${error.name}: ${error.message}` : String(error)
         }`,
       );
+      const details = (error as { errorData?: unknown }).errorData;
+      if (details !== undefined) {
+        console.error(`[billing] Shopify's reason: ${JSON.stringify(details)}`);
+      }
       return Response.json(
         {
           ok: false,
